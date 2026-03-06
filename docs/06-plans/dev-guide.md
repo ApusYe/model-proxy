@@ -172,9 +172,9 @@
 - `ModelProxy/Models/ModelMapping.swift` (new)
 - `ModelProxy/Models/ClientConfig.swift` (simplified: only clientName + port + defaultUpstream)
 - `ModelProxy/Views/SettingsView.swift`
-- `ModelProxy/Views/VendorListView.swift`
+- `ModelProxy/Views/VendorsTabView.swift`
 - `ModelProxy/Views/VendorEditSheet.swift`
-- `ModelProxy/Views/RoutingView.swift`
+- `ModelProxy/Views/RoutingTabView.swift`
 - `ModelProxy/Services/ConfigStore.swift` (migration)
 - `ModelProxy/Proxy/RoutingSnapshot.swift` (updated)
 - `ModelProxy/Proxy/RequestRouter.swift` (hot reload)
@@ -243,6 +243,8 @@
 
 ## Phase 5: Token Statistics
 
+**Status:** Completed — 2026-03-06
+
 **Goal:** Token usage is extracted from API responses and displayed in the popover and Settings as aggregated totals.
 
 **Depends on:** Phase 2 (ResponseRelay), Phase 4 (StatusPopover structure)
@@ -263,7 +265,7 @@
 - `ModelProxy/Models/TokenStats.swift`
 - `ModelProxy/Services/TokenStatsStore.swift`
 - `ModelProxy/Views/StatusPopover.swift` (stats summary)
-- `ModelProxy/Views/StatsView.swift`
+- `ModelProxy/Views/StatisticsTabView.swift`
 
 **Acceptance criteria:**
 - [ ] Non-streaming request: token counts increment correctly
@@ -288,11 +290,12 @@
 
 **Scope:**
 - `SMAppService` integration: register/unregister login item; Settings General tab toggle
-- Menu bar icon state:
-  - Normal: default icon
-  - Proxy error (port conflict, vendor unreachable): red badge
-  - Config issue (deprecated Anthropic model in mappings): yellow badge
-- Popover error display: when icon shows badge, popover top shows error/warning message
+- Menu bar icon state (SF Symbols, template-rendered for light/dark):
+  - Normal: `network`
+  - Proxy stopped with error: `network.slash`
+  - Running with partial error: `network.badge.shield.half.filled`
+  - Deprecation warning: `exclamationmark.triangle`
+- Popover error display: when icon shows warning/error state, popover top shows corresponding banner
 - Edge cases:
   - config.json missing/corrupt at launch: reset to defaults with notification
   - Upstream vendor unreachable: return HTTP error to client, show in traffic list
@@ -315,12 +318,12 @@
 
 **Acceptance criteria:**
 - [ ] Launch at Login toggle works (on/off verified by log out/in)
-- [ ] Port conflict: popover shows error, red badge on icon
+- [ ] Port conflict: popover shows error, icon changes to `network.slash`
 - [ ] Missing config.json: app starts with defaults, no crash
 - [ ] Upstream 503: traffic list shows 503, client receives proper error
 - [ ] No API key in Console.app logs
 - [ ] Menu bar icon renders correctly in light and dark mode
-- [ ] Deprecated model mapping: yellow badge + popover warning
+- [ ] Deprecated model mapping: icon changes to `exclamationmark.triangle` + popover warning
 
 **Review checklist:**
 - [ ] /execution-review

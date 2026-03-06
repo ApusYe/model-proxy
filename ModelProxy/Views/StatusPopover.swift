@@ -245,7 +245,22 @@ struct StatusPopover: View {
                     .accessibilityHint("Starts the local proxy server on configured ports.")
                 }
 
-                Button { openSettings() } label: {
+                Button {
+                    openSettings()
+                    Task { @MainActor in
+                        NSApp.setActivationPolicy(.regular)
+                        try? await Task.sleep(for: .milliseconds(100))
+                        NSApp.activate()
+                        if let w = NSApp.windows.first(where: {
+                            $0.identifier?.rawValue == "com.apple.SwiftUI.Settings"
+                                || ($0.isVisible && $0.styleMask.contains(.titled)
+                                    && $0.title.localizedCaseInsensitiveContains("settings"))
+                        }) {
+                            w.makeKeyAndOrderFront(nil)
+                            w.orderFrontRegardless()
+                        }
+                    }
+                } label: {
                     Image(systemName: "gear")
                 }
                 .buttonStyle(.bordered)

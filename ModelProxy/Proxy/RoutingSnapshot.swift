@@ -11,6 +11,8 @@ struct RoutingSnapshot: Sendable {
         /// Vendor API key (empty string = use original key from request)
         let apiKey: String
         let vendorName: String
+        /// Vendor UUID for token stats keying; nil for passthrough routes.
+        let vendorID: UUID?
         /// Replacement model name; nil = no model field substitution
         let targetModel: String?
         /// true = pure passthrough — proxy does not touch headers, key, or body
@@ -43,6 +45,7 @@ struct RoutingSnapshot: Sendable {
                     baseURL: vendor.baseURL,
                     apiKey: vendor.apiKey,
                     vendorName: vendor.name,
+                    vendorID: vendor.id,
                     targetModel: mapping.targetModel,
                     isPassthrough: false
                 )
@@ -60,6 +63,7 @@ struct RoutingSnapshot: Sendable {
                 baseURL: vendor.baseURL,
                 apiKey: vendor.apiKey,
                 vendorName: vendor.name,
+                vendorID: vendor.id,
                 targetModel: nil,
                 isPassthrough: false
             )
@@ -80,6 +84,7 @@ struct RoutingSnapshot: Sendable {
                 baseURL: passthroughBaseURL,
                 apiKey: originalAPIKey,
                 vendorName: "passthrough",
+                vendorID: nil,
                 targetModel: nil,
                 isPassthrough: true
             ))
@@ -92,6 +97,7 @@ struct RoutingSnapshot: Sendable {
                 baseURL: passthroughBaseURL,
                 apiKey: originalAPIKey,
                 vendorName: "passthrough",
+                vendorID: nil,
                 targetModel: nil,
                 isPassthrough: true
             ))

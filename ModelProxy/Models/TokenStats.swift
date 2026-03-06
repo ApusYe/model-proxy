@@ -26,8 +26,7 @@ struct DailyTokenSnapshot: Codable, Sendable {
     }
 }
 
-/// In-memory accumulator for token stats; not @Observable (managed by a future TokenStatsStore actor).
-/// This Phase 1 definition establishes the data shape used in Phase 6.
+/// In-memory accumulator for token stats. Managed by TokenStatsStore.
 struct TokenStats: Sendable {
     /// Outer key: vendor UUID. Inner key: model ID.
     private(set) var records: [UUID: [String: ModelTokenRecord]] = [:]

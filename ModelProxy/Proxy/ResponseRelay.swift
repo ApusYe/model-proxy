@@ -1,13 +1,24 @@
 import Foundation
 import NIOCore
+import NIOFoundationCompat
 import NIOHTTP1
 import AsyncHTTPClient
+import OSLog
 
 enum ResponseRelay {
 
+    /// Token usage callback: (inputTokens, outputTokens).
+    typealias UsageCallback = @Sendable (Int, Int) -> Void
+
     /// Relay an AsyncHTTPClient response (headers + body) back to a NIO client channel.
     /// Writes each body chunk immediately as it arrives — no buffering for SSE.
-    static func relay(upstreamResponse: HTTPClientResponse, to channel: any Channel) async {
+    /// - Parameter onUsage: optional closure invoked once with extracted token counts.
+    ///   Called at most once per relay call; never called if usage cannot be parsed.
+    static func relay(
+        upstreamResponse: HTTPClientResponse,
+        to channel: any Channel,
+        onUsage: UsageCallback? = nil
+    ) async {
         // 1. Forward status + response headers.
         var responseHead = HTTPResponseHead(
             version: .http1_1,
@@ -15,25 +26,64 @@ enum ResponseRelay {
         )
         for (name, value) in upstreamResponse.headers {
             let lower = name.lowercased()
-            // Strip hop-by-hop headers.
             if lower == "transfer-encoding" || lower == "connection" { continue }
             responseHead.headers.add(name: name, value: value)
         }
-
-        // Add Connection: close since we always close after this response (Phase 2 behavior).
-        // This prevents clients from attempting keep-alive reuse and getting reset errors.
         responseHead.headers.add(name: "connection", value: "close")
+
+        // Determine response type from Content-Type header.
+        let contentType = upstreamResponse.headers.first(name: "content-type") ?? ""
+        let isSSE = contentType.lowercased().contains("text/event-stream")
 
         do {
             try await channel.writeAndFlush(
                 NIOAny(HTTPServerResponsePart.head(responseHead))
             ).get()
 
-            // 2. Stream body chunks as they arrive.
-            for try await chunk in upstreamResponse.body {
-                try await channel.writeAndFlush(
-                    NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
-                ).get()
+            if isSSE {
+                // 2a. SSE: forward each chunk immediately; accumulate usage across events.
+                // Anthropic splits input_tokens (message_start) and output_tokens (message_delta).
+                var accumulatedInput = 0
+                var accumulatedOutput = 0
+                for try await chunk in upstreamResponse.body {
+                    try await channel.writeAndFlush(
+                        NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
+                    ).get()
+
+                    // Scan chunk for usage data, accumulate across events.
+                    if onUsage != nil {
+                        let (input, output) = extractUsageFromSSEChunk(chunk)
+                        accumulatedInput += input
+                        accumulatedOutput += output
+                    }
+                }
+                // Report accumulated totals at stream end.
+                if let callback = onUsage, (accumulatedInput > 0 || accumulatedOutput > 0) {
+                    callback(accumulatedInput, accumulatedOutput)
+                }
+            } else {
+                // 2b. Non-streaming: forward chunks immediately; accumulate a parallel copy.
+                var bodyAccumulator = Data()
+                let shouldAccumulate = onUsage != nil
+
+                for try await chunk in upstreamResponse.body {
+                    try await channel.writeAndFlush(
+                        NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
+                    ).get()
+
+                    if shouldAccumulate {
+                        if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                            bodyAccumulator.append(bytes)
+                        }
+                    }
+                }
+
+                // Parse usage from full body after all chunks forwarded.
+                if let callback = onUsage, !bodyAccumulator.isEmpty {
+                    if let (input, output) = extractUsageFromJSONBody(bodyAccumulator) {
+                        callback(input, output)
+                    }
+                }
             }
 
             // 3. Signal end of response.
@@ -42,13 +92,75 @@ enum ResponseRelay {
             ).get()
 
         } catch {
-            // Channel may already be closed (client disconnected mid-stream); log and continue.
-            print("[ResponseRelay] Write error (client may have disconnected): \(error)")
+            Logger.proxy.warning("[ResponseRelay] Write error (client may have disconnected): \(error, privacy: .public)")
         }
 
-        // Close the client connection unless keep-alive was negotiated.
-        // For simplicity in Phase 2, always close after each response.
-        // Phase 3+ can add keep-alive support when the UI is in place.
         try? await channel.close().get()
+    }
+
+    // MARK: - Usage Extraction
+
+    /// Extract token usage from a non-streaming JSON response body.
+    /// Handles both Anthropic format (`input_tokens`, `output_tokens`, `cache_read_input_tokens`)
+    /// and OpenAI format (`prompt_tokens`, `completion_tokens`).
+    private static func extractUsageFromJSONBody(_ data: Data) -> (Int, Int)? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let usage = json["usage"] as? [String: Any] else {
+            return nil
+        }
+        return parseUsageDict(usage)
+    }
+
+    /// Extract token usage from a single SSE chunk (may contain multiple `data:` lines).
+    /// Checks both top-level `usage` and nested `message.usage` paths to handle
+    /// Anthropic streaming (input_tokens in message_start, output_tokens in message_delta).
+    /// Returns (0, 0) if no usage found in this chunk.
+    private static func extractUsageFromSSEChunk(_ buffer: ByteBuffer) -> (Int, Int) {
+        guard let text = buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) else {
+            return (0, 0)
+        }
+        var chunkInput = 0
+        var chunkOutput = 0
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("data:") else { continue }
+            let jsonString = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard jsonString != "[DONE]",
+                  let jsonData = jsonString.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                continue
+            }
+            // Check top-level usage (Anthropic message_delta, OpenAI final chunk).
+            if let usage = json["usage"] as? [String: Any],
+               let (input, output) = parseUsageDict(usage) {
+                chunkInput += input
+                chunkOutput += output
+            }
+            // Check nested message.usage (Anthropic message_start contains input_tokens here).
+            if let message = json["message"] as? [String: Any],
+               let usage = message["usage"] as? [String: Any],
+               let (input, _) = parseUsageDict(usage) {
+                chunkInput += input
+            }
+        }
+        return (chunkInput, chunkOutput)
+    }
+
+    /// Parse a `usage` dictionary into (inputTokens, outputTokens).
+    /// Supports Anthropic keys (`input_tokens`, `output_tokens`, `cache_read_input_tokens`)
+    /// and OpenAI keys (`prompt_tokens`, `completion_tokens`).
+    /// Returns nil only if no recognized token field is found.
+    private static func parseUsageDict(_ usage: [String: Any]) -> (Int, Int)? {
+        let anthropicInput = (usage["input_tokens"] as? Int ?? 0)
+            + (usage["cache_read_input_tokens"] as? Int ?? 0)
+        let anthropicOutput = usage["output_tokens"] as? Int ?? 0
+        let openaiInput = usage["prompt_tokens"] as? Int ?? 0
+        let openaiOutput = usage["completion_tokens"] as? Int ?? 0
+
+        let input = max(anthropicInput, openaiInput)
+        let output = max(anthropicOutput, openaiOutput)
+
+        guard input > 0 || output > 0 else { return nil }
+        return (input, output)
     }
 }

@@ -3,6 +3,7 @@ import NIOCore
 import NIOHTTP1
 import AsyncHTTPClient
 import NIOPosix
+import OSLog
 
 /// NIO channel handler: accumulates a full HTTP request, then dispatches async forwarding.
 final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
@@ -12,15 +13,17 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     private let router: RequestRouter
     private let httpClient: HTTPClient
     private let trafficLog: TrafficLog
+    private let tokenStatsStore: TokenStatsStore
 
     // Accumulated state for the current request.
     private var requestHead: HTTPRequestHead?
     private var bodyBuffer: ByteBuffer?
 
-    init(router: RequestRouter, httpClient: HTTPClient, trafficLog: TrafficLog) {
+    init(router: RequestRouter, httpClient: HTTPClient, trafficLog: TrafficLog, tokenStatsStore: TokenStatsStore) {
         self.router = router
         self.httpClient = httpClient
         self.trafficLog = trafficLog
+        self.tokenStatsStore = tokenStatsStore
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -39,8 +42,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             let router = self.router
             let httpClient = self.httpClient
             let trafficLog = self.trafficLog
+            let tokenStatsStore = self.tokenStatsStore
 
-            // Bridge NIO to Swift async: safe because channel is Sendable via NIO's own conformance.
             Task {
                 await ProxyForwarder.forward(
                     head: head,
@@ -48,7 +51,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
                     channel: channel,
                     router: router,
                     httpClient: httpClient,
-                    trafficLog: trafficLog
+                    trafficLog: trafficLog,
+                    tokenStatsStore: tokenStatsStore
                 )
             }
 
@@ -59,7 +63,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        print("[ProxyChannelHandler] Channel error: \(error)")
+        Logger.proxy.error("[ProxyChannelHandler] Channel error: \(error, privacy: .public)")
         context.close(promise: nil)
     }
 }

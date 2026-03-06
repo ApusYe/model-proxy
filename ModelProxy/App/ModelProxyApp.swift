@@ -6,10 +6,11 @@ struct ModelProxyApp: App {
     @State private var proxyServer = ProxyServer()
 
     var body: some Scene {
-        MenuBarExtra("ModelProxy", systemImage: "arrow.triangle.2.circlepath") {
+        MenuBarExtra("ModelProxy", systemImage: "network") {
             StatusPopover()
                 .environment(configStore)
                 .environment(proxyServer)
+                .environment(proxyServer.trafficLog)
         }
         .menuBarExtraStyle(.window)
 

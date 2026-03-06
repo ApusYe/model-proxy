@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 
 /// Loads and saves AppConfig to ~/Library/Application Support/ModelProxy/config.json.
 /// @MainActor because AppConfig is @Observable and mutated from SwiftUI context.
@@ -7,6 +8,8 @@ import Observation
 @Observable
 final class ConfigStore {
     private(set) var config: AppConfig
+    /// True if config.json was corrupt at launch and was reset to defaults.
+    private(set) var didResetFromCorrupt: Bool = false
 
     private static let appSupportURL: URL = {
         let base = FileManager.default.urls(
@@ -23,12 +26,18 @@ final class ConfigStore {
     // MARK: - Init
 
     init() {
-        self.config = ConfigStore.loadOrCreateDefault()
+        let result = ConfigStore.loadOrCreateDefault()
+        self.config = result.config
+        self.didResetFromCorrupt = result.wasCorrupt
+    }
+
+    func clearCorruptFlag() {
+        didResetFromCorrupt = false
     }
 
     // MARK: - Load
 
-    private static func loadOrCreateDefault() -> AppConfig {
+    private static func loadOrCreateDefault() -> (config: AppConfig, wasCorrupt: Bool) {
         let fileURL = configFileURL
         let fm = FileManager.default
 
@@ -41,7 +50,7 @@ final class ConfigStore {
               let data = try? Data(contentsOf: fileURL) else {
             let defaults = AppConfig.makeDefault()
             try? JSONEncoder.pretty.encode(defaults).write(to: fileURL)
-            return defaults
+            return (defaults, false)
         }
 
         do {
@@ -64,14 +73,13 @@ final class ConfigStore {
                 }
             }
 
-            return config
+            return (config, false)
         } catch {
-            // Corrupt config: reset to defaults.
-            // Phase 6 will add a user confirmation dialog before resetting.
-            print("[ConfigStore] Failed to decode config.json: \(error). Resetting to defaults.")
+            // Corrupt config: reset to defaults. StatusPopover shows one-time alert via didResetFromCorrupt flag.
+            Logger.config.error("[ConfigStore] Failed to decode config.json: \(error, privacy: .public). Resetting to defaults.")
             let defaults = AppConfig.makeDefault()
             try? JSONEncoder.pretty.encode(defaults).write(to: fileURL)
-            return defaults
+            return (defaults, true)
         }
     }
 
@@ -82,7 +90,7 @@ final class ConfigStore {
             let data = try JSONEncoder.pretty.encode(config)
             try data.write(to: ConfigStore.configFileURL, options: .atomic)
         } catch {
-            print("[ConfigStore] Failed to save config.json: \(error)")
+            Logger.config.error("[ConfigStore] Failed to save config.json: \(error, privacy: .public)")
         }
     }
 

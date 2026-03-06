@@ -16,6 +16,7 @@ Packages/
 # Claude Code session state
 .claude/compact-suggested-at
 .claude/dev-workflow-state.yml
+.claude/reviews
 
 # macOS
 .DS_Store

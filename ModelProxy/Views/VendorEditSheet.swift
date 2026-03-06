@@ -36,6 +36,7 @@ struct VendorEditSheet: View {
                             showAPIKey.toggle()
                         }
                         .buttonStyle(.borderless)
+                        .accessibilityLabel(showAPIKey ? "Hide API Key" : "Reveal API Key")
                     }
                 }
             }
@@ -47,12 +48,14 @@ struct VendorEditSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityLabel("Cancel")
                 Button(isEditing ? "Save" : "Add") {
                     commitVendor()
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || baseURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                .accessibilityLabel(isEditing ? "Save Vendor" : "Add Vendor")
             }
             .padding()
         }

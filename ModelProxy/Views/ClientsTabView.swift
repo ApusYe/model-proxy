@@ -117,6 +117,8 @@ private struct ClientRowSection: View {
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(showCopied ? .green : .accentColor)
+                    .accessibilityLabel("Copy quick start command for \(client.clientName)")
+                    .accessibilityHint("Copies the export command to clipboard.")
                 }
             }
         }

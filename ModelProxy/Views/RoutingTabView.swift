@@ -6,16 +6,6 @@ struct RoutingTabView: View {
 
     @State private var showAddRow: Bool = false
 
-    // Known Anthropic model IDs for the source picker.
-    private let knownAnthropicModels: [String] = [
-        "claude-haiku-4-5",
-        "claude-sonnet-4-6",
-        "claude-opus-4-6",
-        "claude-3-5-haiku-20241022",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-opus-20240229",
-    ]
-
     var body: some View {
         Form {
             Section {
@@ -34,7 +24,7 @@ struct RoutingTabView: View {
 
                 if showAddRow {
                     AddMappingRow(
-                        knownAnthropicModels: knownAnthropicModels,
+                        knownAnthropicModels: KnownAnthropicModels.all,
                         onAdd: { newMapping in
                             configStore.config.modelMappings.append(newMapping)
                             configStore.saveAndReload(proxyServer: proxyServer)
@@ -52,6 +42,7 @@ struct RoutingTabView: View {
                     Button("Add Rule") { showAddRow = true }
                         .buttonStyle(.borderless)
                         .disabled(showAddRow || configStore.config.vendors.isEmpty)
+                        .accessibilityLabel("Add Routing Rule")
                 }
             } footer: {
                 if configStore.config.vendors.isEmpty {
@@ -94,6 +85,7 @@ private struct MappingRow: View {
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.red)
+            .accessibilityLabel("Delete rule for \(mapping.sourceModel)")
         }
     }
 }
@@ -127,6 +119,7 @@ private struct AddMappingRow: View {
             HStack {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(.borderless)
+                    .accessibilityLabel("Cancel")
                 Spacer()
                 Button("Add") {
                     guard !selectedSourceModel.isEmpty,
@@ -145,6 +138,7 @@ private struct AddMappingRow: View {
                     targetModel.trimmingCharacters(in: .whitespaces).isEmpty ||
                     selectedVendorID == nil
                 )
+                .accessibilityLabel("Add Routing Rule")
             }
         }
         .padding(.vertical, 4)

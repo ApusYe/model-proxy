@@ -1,0 +1,21 @@
+# Xcode
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+Packages/
+
+# Claude Code session state
+.claude/compact-suggested-at
+.claude/dev-workflow-state.yml
+
+# macOS
+.DS_Store

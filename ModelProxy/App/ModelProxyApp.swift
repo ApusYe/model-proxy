@@ -32,6 +32,9 @@ struct ModelProxyApp: App {
                 .environment(proxyServer)
                 .environment(tokenStatsStore)
                 .environment(loginItemService)
+                .onDisappear {
+                    NSApp.setActivationPolicy(.accessory)
+                }
         }
     }
 }

@@ -61,31 +61,86 @@ private struct MappingRow: View {
     @Environment(ProxyServer.self) private var proxyServer
     let mapping: ModelMapping
 
+    @State private var isEditing = false
+    @State private var editSourceModel = ""
+    @State private var editTargetModel = ""
+    @State private var editVendorID: UUID?
+
     private var vendorName: String {
         configStore.config.vendors.first(where: { $0.id == mapping.targetVendorID })?.name ?? "Unknown vendor"
     }
 
     var body: some View {
-        HStack {
-            Text(mapping.sourceModel)
-                .font(.system(.body, design: .monospaced))
-            Image(systemName: "arrow.right")
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(mapping.targetModel)
+        if isEditing {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Source model", selection: $editSourceModel) {
+                    Text("Select...").tag("")
+                    ForEach(KnownAnthropicModels.all, id: \.self) { model in
+                        Text(model).tag(model)
+                    }
+                }
+                TextField("Target model (vendor model name)", text: $editTargetModel)
+                    .autocorrectionDisabled()
+                Picker("Target vendor", selection: $editVendorID) {
+                    Text("Select...").tag(UUID?.none)
+                    ForEach(configStore.config.vendors) { vendor in
+                        Text(vendor.name).tag(UUID?.some(vendor.id))
+                    }
+                }
+                HStack {
+                    Button("Cancel") { isEditing = false }
+                        .buttonStyle(.borderless)
+                    Spacer()
+                    Button("Save") {
+                        guard let index = configStore.config.modelMappings.firstIndex(where: { $0.id == mapping.id }),
+                              !editSourceModel.isEmpty,
+                              !editTargetModel.trimmingCharacters(in: .whitespaces).isEmpty,
+                              let vendorID = editVendorID else { return }
+                        configStore.config.modelMappings[index].sourceModel = editSourceModel
+                        configStore.config.modelMappings[index].targetModel = editTargetModel.trimmingCharacters(in: .whitespaces)
+                        configStore.config.modelMappings[index].targetVendorID = vendorID
+                        configStore.saveAndReload(proxyServer: proxyServer)
+                        isEditing = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        editSourceModel.isEmpty ||
+                        editTargetModel.trimmingCharacters(in: .whitespaces).isEmpty ||
+                        editVendorID == nil
+                    )
+                }
+            }
+            .padding(.vertical, 4)
+        } else {
+            HStack {
+                Text(mapping.sourceModel)
                     .font(.system(.body, design: .monospaced))
-                Text(vendorName)
-                    .font(.caption)
+                Image(systemName: "arrow.right")
                     .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(mapping.targetModel)
+                        .font(.system(.body, design: .monospaced))
+                    Text(vendorName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Edit") {
+                    editSourceModel = mapping.sourceModel
+                    editTargetModel = mapping.targetModel
+                    editVendorID = mapping.targetVendorID
+                    isEditing = true
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Edit rule for \(mapping.sourceModel)")
+                Button("Delete") {
+                    configStore.config.modelMappings.removeAll { $0.id == mapping.id }
+                    configStore.saveAndReload(proxyServer: proxyServer)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+                .accessibilityLabel("Delete rule for \(mapping.sourceModel)")
             }
-            Spacer()
-            Button("Delete") {
-                configStore.config.modelMappings.removeAll { $0.id == mapping.id }
-                configStore.saveAndReload(proxyServer: proxyServer)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.red)
-            .accessibilityLabel("Delete rule for \(mapping.sourceModel)")
         }
     }
 }

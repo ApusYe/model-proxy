@@ -4,6 +4,7 @@ import NIOPosix
 import NIOHTTP1
 import AsyncHTTPClient
 import Observation
+import OSLog
 
 /// Manages one NIO listener per configured client port.
 /// @MainActor: all state mutations happen on main thread for SwiftUI observers.
@@ -14,11 +15,23 @@ final class ProxyServer {
     // MARK: - Observable State
 
     private(set) var isRunning: Bool = false
+    /// True after user explicitly stops the proxy. Cleared on next start().
+    private(set) var isStopped: Bool = false
     private(set) var lastError: String? = nil
     /// Ports currently bound, keyed by clientName for display.
     private(set) var boundPorts: [String: Int] = [:]
     /// Traffic log shared with all channel handlers.
     let trafficLog: TrafficLog = TrafficLog()
+    /// Token stats store shared with all channel handlers.
+    let tokenStatsStore: TokenStatsStore
+    /// Source model IDs that are in config but not in KnownAnthropicModels.all.
+    private(set) var deprecationWarnings: [String] = []
+
+    // MARK: - Init
+
+    init(tokenStatsStore: TokenStatsStore) {
+        self.tokenStatsStore = tokenStatsStore
+    }
 
     // MARK: - Internal State
 
@@ -37,6 +50,7 @@ final class ProxyServer {
     /// Start one listener per client in `config`. Idempotent if already running.
     func start(config: AppConfig) async {
         guard !isRunning else { return }
+        isStopped = false
         lastError = nil
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
@@ -53,6 +67,7 @@ final class ProxyServer {
         var errors: [String] = []
 
         let trafficLog = self.trafficLog
+        let tokenStatsStore = self.tokenStatsStore
 
         for clientCfg in config.clients {
             let snapshot = RoutingSnapshot(from: config, for: clientCfg)
@@ -64,7 +79,7 @@ final class ProxyServer {
                 .childChannelInitializer { channel in
                     channel.pipeline.configureHTTPServerPipeline(withErrorHandling: true).flatMap {
                         channel.pipeline.addHandler(
-                            ProxyChannelHandler(router: router, httpClient: client, trafficLog: trafficLog)
+                            ProxyChannelHandler(router: router, httpClient: client, trafficLog: trafficLog, tokenStatsStore: tokenStatsStore)
                         )
                     }
                 }
@@ -74,7 +89,7 @@ final class ProxyServer {
             do {
                 let channel = try await bootstrap.bind(host: "127.0.0.1", port: clientCfg.port).get()
                 let actualPort = channel.localAddress?.port ?? clientCfg.port
-                print("[ProxyServer] \(clientCfg.clientName) listening on 127.0.0.1:\(actualPort)")
+                Logger.proxy.info("[ProxyServer] \(clientCfg.clientName, privacy: .public) listening on 127.0.0.1:\(actualPort, privacy: .public)")
                 slots.append(ListenerSlot(channel: channel, router: router, clientName: clientCfg.clientName))
                 boundPorts[clientCfg.clientName] = actualPort
             } catch let err as NIOCore.IOError where err.errnoCode == EADDRINUSE {
@@ -107,6 +122,7 @@ final class ProxyServer {
     func stop() async {
         guard isRunning else { return }
         isRunning = false
+        isStopped = true
         boundPorts = [:]
 
         for slot in listeners {
@@ -120,7 +136,22 @@ final class ProxyServer {
         try? await eventLoopGroup?.shutdownGracefully()
         eventLoopGroup = nil
 
-        print("[ProxyServer] Stopped.")
+        Logger.proxy.info("[ProxyServer] Stopped.")
+    }
+
+    /// SF Symbol name for the menu bar icon. Adapts to light/dark via template rendering.
+    /// States in priority order: not running → xmark.circle, partial error → exclamationmark.circle,
+    /// deprecation → exclamationmark.triangle, normal → arrow.triangle.branch.
+    var menuBarSymbol: String {
+        guard isRunning else { return "xmark.circle" }
+        if lastError != nil { return "exclamationmark.circle" }
+        if !deprecationWarnings.isEmpty { return "exclamationmark.triangle" }
+        return "arrow.triangle.branch"
+    }
+
+    /// Called by StatusPopover after loading config to flag stale model mappings.
+    func setDeprecationWarnings(_ warnings: [String]) {
+        deprecationWarnings = warnings
     }
 
     // MARK: - Hot Reload

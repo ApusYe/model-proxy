@@ -17,6 +17,8 @@ final class ProxyServer {
     private(set) var lastError: String? = nil
     /// Ports currently bound, keyed by clientName for display.
     private(set) var boundPorts: [String: Int] = [:]
+    /// Traffic log shared with all channel handlers.
+    let trafficLog: TrafficLog = TrafficLog()
 
     // MARK: - Internal State
 
@@ -50,6 +52,8 @@ final class ProxyServer {
         var slots: [ListenerSlot] = []
         var errors: [String] = []
 
+        let trafficLog = self.trafficLog
+
         for clientCfg in config.clients {
             let snapshot = RoutingSnapshot(from: config, for: clientCfg)
             let router = RequestRouter(snapshot: snapshot)
@@ -60,7 +64,7 @@ final class ProxyServer {
                 .childChannelInitializer { channel in
                     channel.pipeline.configureHTTPServerPipeline(withErrorHandling: true).flatMap {
                         channel.pipeline.addHandler(
-                            ProxyChannelHandler(router: router, httpClient: client)
+                            ProxyChannelHandler(router: router, httpClient: client, trafficLog: trafficLog)
                         )
                     }
                 }

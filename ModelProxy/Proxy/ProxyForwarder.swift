@@ -12,7 +12,8 @@ enum ProxyForwarder {
         body: ByteBuffer,
         channel: any Channel,
         router: RequestRouter,
-        httpClient: HTTPClient
+        httpClient: HTTPClient,
+        trafficLog: TrafficLog
     ) async {
         // 1. Extract original API key (support both x-api-key and Authorization: Bearer).
         let originalAPIKey = Self.extractAPIKey(from: head.headers)
@@ -33,6 +34,8 @@ enum ProxyForwarder {
             target = t
         case .blocked(let reason):
             print("[Proxy] \(head.method.rawValue) \(head.uri) model=\(model) BLOCKED")
+            let blockedEntry = TrafficEntry(model: model, routeType: .blocked, httpStatus: 403)
+            await MainActor.run { trafficLog.append(blockedEntry) }
             await Self.sendError(channel: channel, status: .forbidden, message: reason)
             return
         }
@@ -42,8 +45,6 @@ enum ProxyForwarder {
         print("[Proxy] \(head.method.rawValue) \(head.uri) model=\(model) \(routeType) → \(target.baseURL)")
 
         // 3. Build upstream URL.
-        // target.baseURL is either the vendor's baseURL (mapped) or the client's defaultUpstream (passthrough).
-        // head.uri is the request path from the client (e.g., "/v1/messages").
         let finalURLString = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/"))
             + head.uri
 
@@ -56,20 +57,17 @@ enum ProxyForwarder {
         var upstreamHeaders = HTTPHeaders()
         for (name, value) in head.headers {
             let lower = name.lowercased()
-            // Strip hop-by-hop and host headers; we will set them fresh.
             if lower == "host" || lower == "connection" || lower == "transfer-encoding" { continue }
             upstreamHeaders.add(name: name, value: value)
         }
 
         if !target.isPassthrough {
-            // Inject vendor API key for mapped requests.
             upstreamHeaders.remove(name: "authorization")
             upstreamHeaders.remove(name: "x-api-key")
             upstreamHeaders.add(name: "Authorization", value: "Bearer \(target.apiKey)")
             upstreamHeaders.add(name: "x-api-key", value: target.apiKey)
         }
 
-        // Update Host header to match upstream destination.
         if let host = URL(string: target.baseURL)?.host {
             upstreamHeaders.remove(name: "host")
             upstreamHeaders.add(name: "Host", value: host)
@@ -78,9 +76,7 @@ enum ProxyForwarder {
         // 5. Prepare request body — modify model field if mapped.
         var bodyData = body.getData(at: body.readerIndex, length: body.readableBytes) ?? Data()
 
-        // If targetModel is set (mapped model), replace the model field in the JSON body.
         if let targetModel = target.targetModel {
-            // Parse JSON, replace model field, re-encode.
             if var jsonBody = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
                 jsonBody["model"] = targetModel
                 bodyData = (try? JSONSerialization.data(withJSONObject: jsonBody)) ?? bodyData
@@ -96,10 +92,16 @@ enum ProxyForwarder {
             upstreamRequest.body = .bytes(bodyData)
         }
 
+        let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
+            ? .passthrough
+            : .mapped(vendorName: target.vendorName)
+
         let upstreamResponse: HTTPClientResponse
         do {
             upstreamResponse = try await httpClient.execute(upstreamRequest, timeout: .seconds(120))
         } catch {
+            let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: 502)
+            await MainActor.run { trafficLog.append(entry) }
             await Self.sendError(channel: channel, status: .badGateway, message: "Upstream unreachable: \(error)")
             return
         }
@@ -109,6 +111,11 @@ enum ProxyForwarder {
             upstreamResponse: upstreamResponse,
             to: channel
         )
+
+        // 8. Publish traffic event with actual upstream status code.
+        let statusCode = Int(upstreamResponse.status.code)
+        let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: statusCode)
+        await MainActor.run { trafficLog.append(entry) }
     }
 
     // MARK: - Helpers

@@ -11,14 +11,16 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private let router: RequestRouter
     private let httpClient: HTTPClient
+    private let trafficLog: TrafficLog
 
     // Accumulated state for the current request.
     private var requestHead: HTTPRequestHead?
     private var bodyBuffer: ByteBuffer?
 
-    init(router: RequestRouter, httpClient: HTTPClient) {
+    init(router: RequestRouter, httpClient: HTTPClient, trafficLog: TrafficLog) {
         self.router = router
         self.httpClient = httpClient
+        self.trafficLog = trafficLog
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -36,6 +38,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             let channel = context.channel
             let router = self.router
             let httpClient = self.httpClient
+            let trafficLog = self.trafficLog
 
             // Bridge NIO to Swift async: safe because channel is Sendable via NIO's own conformance.
             Task {
@@ -44,7 +47,8 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
                     body: body,
                     channel: channel,
                     router: router,
-                    httpClient: httpClient
+                    httpClient: httpClient,
+                    trafficLog: trafficLog
                 )
             }
 
@@ -55,7 +59,6 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        // Log and close; do not crash the server.
         print("[ProxyChannelHandler] Channel error: \(error)")
         context.close(promise: nil)
     }

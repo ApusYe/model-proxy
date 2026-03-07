@@ -62,7 +62,9 @@ enum ResponseRelay {
                     callback(accumulatedInput, accumulatedOutput)
                 }
             } else {
-                // 2b. Non-streaming: forward chunks immediately; accumulate a parallel copy.
+                // 2b. Non-streaming: forward chunks immediately; accumulate a parallel copy
+                // for token usage extraction. This doubles peak memory for the response body,
+                // but most API responses are small enough that this is acceptable.
                 var bodyAccumulator = Data()
                 let shouldAccumulate = onUsage != nil
 
@@ -103,7 +105,7 @@ enum ResponseRelay {
     /// Extract token usage from a non-streaming JSON response body.
     /// Handles both Anthropic format (`input_tokens`, `output_tokens`, `cache_read_input_tokens`)
     /// and OpenAI format (`prompt_tokens`, `completion_tokens`).
-    private static func extractUsageFromJSONBody(_ data: Data) -> (Int, Int)? {
+    static func extractUsageFromJSONBody(_ data: Data) -> (Int, Int)? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let usage = json["usage"] as? [String: Any] else {
             return nil
@@ -115,7 +117,7 @@ enum ResponseRelay {
     /// Checks both top-level `usage` and nested `message.usage` paths to handle
     /// Anthropic streaming (input_tokens in message_start, output_tokens in message_delta).
     /// Returns (0, 0) if no usage found in this chunk.
-    private static func extractUsageFromSSEChunk(_ buffer: ByteBuffer) -> (Int, Int) {
+    static func extractUsageFromSSEChunk(_ buffer: ByteBuffer) -> (Int, Int) {
         guard let text = buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) else {
             return (0, 0)
         }
@@ -150,7 +152,7 @@ enum ResponseRelay {
     /// Supports Anthropic keys (`input_tokens`, `output_tokens`, `cache_read_input_tokens`)
     /// and OpenAI keys (`prompt_tokens`, `completion_tokens`).
     /// Returns nil only if no recognized token field is found.
-    private static func parseUsageDict(_ usage: [String: Any]) -> (Int, Int)? {
+    static func parseUsageDict(_ usage: [String: Any]) -> (Int, Int)? {
         let anthropicInput = (usage["input_tokens"] as? Int ?? 0)
             + (usage["cache_read_input_tokens"] as? Int ?? 0)
         let anthropicOutput = usage["output_tokens"] as? Int ?? 0

@@ -75,14 +75,12 @@ enum ProxyForwarder {
             upstreamHeaders.add(name: "Host", value: host)
         }
 
-        // 5. Prepare request body — modify model field if mapped.
+        // 5. Prepare request body — replace model field value without re-serializing.
+        //    Full JSONSerialization round-trip corrupts thinking block signatures.
         var bodyData = body.getData(at: body.readerIndex, length: body.readableBytes) ?? Data()
 
         if let targetModel = target.targetModel {
-            if var jsonBody = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
-                jsonBody["model"] = targetModel
-                bodyData = (try? JSONSerialization.data(withJSONObject: jsonBody)) ?? bodyData
-            }
+            bodyData = Self.replaceModelField(in: bodyData, with: targetModel)
         }
 
         // 6. Send upstream request via AsyncHTTPClient.
@@ -130,6 +128,21 @@ enum ProxyForwarder {
     }
 
     // MARK: - Helpers
+
+    /// Replace the "model" field value in raw JSON bytes without full re-serialization.
+    /// Preserves all other bytes exactly (critical for thinking block signature integrity).
+    private static func replaceModelField(in data: Data, with newModel: String) -> Data {
+        guard let bodyString = String(data: data, encoding: .utf8) else { return data }
+        let pattern = #""model"\s*:\s*"[^"]*""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: bodyString, range: NSRange(bodyString.startIndex..., in: bodyString)),
+              let range = Range(match.range, in: bodyString) else {
+            return data
+        }
+        var result = bodyString
+        result.replaceSubrange(range, with: #""model": "\#(newModel)""#)
+        return Data(result.utf8)
+    }
 
     private static func extractAPIKey(from headers: HTTPHeaders) -> String {
         if let bearer = headers.first(name: "authorization") {

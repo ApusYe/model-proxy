@@ -86,13 +86,10 @@ enum ProxyForwarder {
         }
 
         // 6. Send upstream request via AsyncHTTPClient.
-        var upstreamRequest: HTTPClientRequest
-        do {
-            upstreamRequest = HTTPClientRequest(url: finalURLString)
-            upstreamRequest.method = head.method
-            upstreamRequest.headers = upstreamHeaders
-            upstreamRequest.body = .bytes(bodyData)
-        }
+        var upstreamRequest = HTTPClientRequest(url: finalURLString)
+        upstreamRequest.method = head.method
+        upstreamRequest.headers = upstreamHeaders
+        upstreamRequest.body = .bytes(bodyData)
 
         let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
             ? .passthrough
@@ -151,10 +148,10 @@ enum ProxyForwarder {
         var buf = channel.allocator.buffer(capacity: bodyData.count)
         buf.writeBytes(bodyData)
 
-        _ = try? await channel.writeAndFlush(
+        _ = try? await channel.write(
             NIOAny(HTTPServerResponsePart.head(responseHead))
         ).get()
-        _ = try? await channel.writeAndFlush(
+        _ = try? await channel.write(
             NIOAny(HTTPServerResponsePart.body(.byteBuffer(buf)))
         ).get()
         _ = try? await channel.writeAndFlush(

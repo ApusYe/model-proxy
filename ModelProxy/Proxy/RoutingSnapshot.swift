@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Immutable routing snapshot for one client port.
 /// Built from AppConfig global mappings + the ClientConfig for the receiving port.
@@ -93,6 +94,7 @@ struct RoutingSnapshot: Sendable {
                 return .routed(fallback)
             }
             // Fallback vendor not configured or deleted; fall back to passthrough.
+            Logger.proxy.warning("[RoutingSnapshot] routeAll fallback vendor missing or deleted for model '\(model, privacy: .public)'; falling back to passthrough")
             return .routed(RouteTarget(
                 baseURL: passthroughBaseURL,
                 apiKey: originalAPIKey,

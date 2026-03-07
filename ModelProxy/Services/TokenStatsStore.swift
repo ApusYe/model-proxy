@@ -18,23 +18,19 @@ final class TokenStatsStore {
 
     // MARK: - File URL
 
-    private static let appSupportURL: URL = {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return base.appendingPathComponent("ModelProxy", isDirectory: true)
-    }()
-
     private static func fileURL(for date: String) -> URL {
-        appSupportURL.appendingPathComponent("token-stats-\(date).json")
+        AppPaths.appSupport.appendingPathComponent("token-stats-\(date).json")
     }
 
-    private static func todayString() -> String {
+    private nonisolated(unsafe) static let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
-        return fmt.string(from: Date())
+        return fmt
+    }()
+
+    private static func todayString() -> String {
+        dateFormatter.string(from: Date())
     }
 
     // MARK: - Init
@@ -97,8 +93,8 @@ final class TokenStatsStore {
 
     private static func load(for date: String) -> TokenStats {
         let fm = FileManager.default
-        if !fm.fileExists(atPath: appSupportURL.path) {
-            try? fm.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: AppPaths.appSupport.path) {
+            try? fm.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
         }
 
         let url = fileURL(for: date)

@@ -6,6 +6,7 @@ import NIOPosix
 import OSLog
 
 /// NIO channel handler: accumulates a full HTTP request, then dispatches async forwarding.
+/// @unchecked Sendable: safe because NIO guarantees channelRead is always called on the same EventLoop thread.
 final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
@@ -37,7 +38,16 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             bodyBuffer?.writeBuffer(&buf)
 
         case .end:
-            guard let head = requestHead, let body = bodyBuffer else { return }
+            guard let head = requestHead, let body = bodyBuffer else {
+                // Malformed sequence: .end without prior .head/.body. Send 400 instead of hanging.
+                let ch = context.channel
+                Task {
+                    await ProxyForwarder.sendError(channel: ch, status: .badRequest, message: "Malformed request: missing head or body")
+                }
+                requestHead = nil
+                bodyBuffer = nil
+                return
+            }
             let channel = context.channel
             let router = self.router
             let httpClient = self.httpClient

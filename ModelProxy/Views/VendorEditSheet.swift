@@ -35,7 +35,7 @@ struct VendorEditSheet: View {
                         Button(showAPIKey ? "Hide" : "Reveal") {
                             showAPIKey.toggle()
                         }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.mpInline)
                         .accessibilityLabel(showAPIKey ? "Hide API Key" : "Reveal API Key")
                     }
                 }
@@ -47,12 +47,14 @@ struct VendorEditSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .buttonStyle(.mpCancel)
                     .keyboardShortcut(.cancelAction)
                     .accessibilityLabel("Cancel")
                 Button(isEditing ? "Save" : "Add") {
                     commitVendor()
                     dismiss()
                 }
+                .buttonStyle(.mpPrimary)
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     name.trimmingCharacters(in: .whitespaces).isEmpty

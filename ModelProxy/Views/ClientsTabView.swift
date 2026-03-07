@@ -115,8 +115,7 @@ private struct ClientRowSection: View {
                             showCopied = false
                         }
                     }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(showCopied ? .green : .accentColor)
+                    .buttonStyle(MPInlineButtonStyle(color: showCopied ? .green : nil))
                     .accessibilityLabel("Copy quick start command for \(client.clientName)")
                     .accessibilityHint("Copies the export command to clipboard.")
                 }

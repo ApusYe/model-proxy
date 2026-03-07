@@ -94,7 +94,7 @@ enum ResponseRelay {
             ).get()
 
         } catch {
-            Logger.proxy.warning("[ResponseRelay] Write error (client may have disconnected): \(error, privacy: .public)")
+            AppLog.proxy.warning("[ResponseRelay] Write error (client may have disconnected): \(error)")
         }
 
         try? await channel.close().get()

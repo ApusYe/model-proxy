@@ -22,6 +22,9 @@ struct SettingsView: View {
 
             StatisticsTabView()
                 .tabItem { Label("Statistics", systemImage: "chart.bar") }
+
+            DebugTabView()
+                .tabItem { Label("Debug", systemImage: "ladybug") }
         }
         .frame(minWidth: 520, minHeight: 380)
         .environment(configStore)

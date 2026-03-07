@@ -1,5 +1,36 @@
 import Foundation
 import Observation
+import OSLog
+
+// MARK: - Debug Config
+
+struct DebugConfig: Codable, Hashable {
+    var isEnabled: Bool = false
+    var minimumLogLevel: LogLevel = .info
+    var autoCleanupEnabled: Bool = true
+    var cleanupAfterDays: Int = 7
+    var compressAfterDays: Int = 3
+
+    enum LogLevel: String, Codable, CaseIterable, Comparable {
+        case debug, info, warning, error
+
+        var osLogType: OSLogType {
+            switch self {
+            case .debug: return .debug
+            case .info: return .info
+            case .warning: return .default
+            case .error: return .error
+            }
+        }
+
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            let order: [Self] = [.debug, .info, .warning, .error]
+            return order.firstIndex(of: lhs)! < order.firstIndex(of: rhs)!
+        }
+    }
+}
+
+// MARK: - App Config
 
 /// Top-level configuration container.
 /// Loaded from and persisted to config.json by ConfigStore.
@@ -10,17 +41,20 @@ final class AppConfig: Codable {
     var clients: [ClientConfig]
     /// Global model routing rules, shared across all clients.
     var modelMappings: [ModelMapping]
+    var debug: DebugConfig
 
     // MARK: - Init
 
     init(
         vendors: [Vendor] = [],
         clients: [ClientConfig] = [],
-        modelMappings: [ModelMapping] = []
+        modelMappings: [ModelMapping] = [],
+        debug: DebugConfig = DebugConfig()
     ) {
         self.vendors = vendors
         self.clients = clients
         self.modelMappings = modelMappings
+        self.debug = debug
     }
 
     // MARK: - Codable
@@ -29,6 +63,7 @@ final class AppConfig: Codable {
         case vendors
         case clients
         case modelMappings
+        case debug
     }
 
     required init(from decoder: Decoder) throws {
@@ -36,6 +71,7 @@ final class AppConfig: Codable {
         vendors = try container.decode([Vendor].self, forKey: .vendors)
         clients = try container.decode([ClientConfig].self, forKey: .clients)
         modelMappings = (try? container.decode([ModelMapping].self, forKey: .modelMappings)) ?? []
+        debug = (try? container.decode(DebugConfig.self, forKey: .debug)) ?? DebugConfig()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -43,6 +79,7 @@ final class AppConfig: Codable {
         try container.encode(vendors, forKey: .vendors)
         try container.encode(clients, forKey: .clients)
         try container.encode(modelMappings, forKey: .modelMappings)
+        try container.encode(debug, forKey: .debug)
     }
 }
 

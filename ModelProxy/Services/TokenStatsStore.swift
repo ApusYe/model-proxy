@@ -86,7 +86,7 @@ final class TokenStatsStore {
                 let data = try JSONEncoder().encode(snapshot)
                 try data.write(to: fileURL, options: .atomic)
             } catch {
-                Logger.stats.error("[TokenStatsStore] Failed to persist stats: \(error, privacy: .public)")
+                AppLog.stats.error("[TokenStatsStore] Failed to persist stats: \(error)")
             }
         }
     }

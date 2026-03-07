@@ -23,7 +23,7 @@ final class LoginItemService {
             }
             isEnabled = SMAppService.mainApp.status == .enabled
         } catch {
-            Logger.config.error("[LoginItemService] Failed to \(enabled ? "register" : "unregister", privacy: .public) login item: \(error, privacy: .public)")
+            AppLog.config.error("[LoginItemService] Failed to \(enabled ? "register" : "unregister") login item: \(error)")
         }
     }
 

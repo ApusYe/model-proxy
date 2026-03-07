@@ -35,7 +35,7 @@ enum ProxyForwarder {
         case .routed(let t):
             target = t
         case .blocked(let reason):
-            Logger.proxy.info("[Proxy] \(head.method.rawValue, privacy: .public) \(head.uri, privacy: .public) model=\(model, privacy: .public) BLOCKED")
+            AppLog.proxy.info("[Proxy] \(head.method.rawValue) \(head.uri) model=\(model) BLOCKED")
             let blockedEntry = TrafficEntry(model: model, routeType: .blocked, httpStatus: 403)
             await MainActor.run { trafficLog.append(blockedEntry) }
             await Self.sendError(channel: channel, status: .forbidden, message: reason)
@@ -44,7 +44,7 @@ enum ProxyForwarder {
 
         // Log request routing (no API keys or body content).
         let routeType = target.isPassthrough ? "passthrough" : "mapped → \(target.vendorName)"
-        Logger.proxy.info("[Proxy] \(head.method.rawValue, privacy: .public) \(head.uri, privacy: .public) model=\(model, privacy: .public) \(routeType, privacy: .public) → \(target.baseURL, privacy: .public)")
+        AppLog.proxy.info("[Proxy] \(head.method.rawValue) \(head.uri) model=\(model) \(routeType) → \(target.baseURL)")
 
         // 3. Build upstream URL.
         let finalURLString = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/"))

@@ -73,7 +73,7 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        Logger.proxy.error("[ProxyChannelHandler] Channel error: \(error, privacy: .public)")
+        AppLog.proxy.error("[ProxyChannelHandler] Channel error: \(error)")
         context.close(promise: nil)
     }
 }

@@ -68,7 +68,7 @@ final class ConfigStore {
             return (config, false)
         } catch {
             // Corrupt config: reset to defaults. StatusPopover shows one-time alert via didResetFromCorrupt flag.
-            Logger.config.error("[ConfigStore] Failed to decode config.json: \(error, privacy: .public). Resetting to defaults.")
+            AppLog.config.error("[ConfigStore] Failed to decode config.json: \(error). Resetting to defaults.")
             let defaults = AppConfig.makeDefault()
             try? JSONEncoder.pretty.encode(defaults).write(to: fileURL)
             return (defaults, true)
@@ -82,7 +82,7 @@ final class ConfigStore {
             let data = try JSONEncoder.pretty.encode(config)
             try data.write(to: ConfigStore.configFileURL, options: .atomic)
         } catch {
-            Logger.config.error("[ConfigStore] Failed to save config.json: \(error, privacy: .public)")
+            AppLog.config.error("[ConfigStore] Failed to save config.json: \(error)")
         }
     }
 

@@ -23,6 +23,10 @@ struct ModelProxyApp: App {
                 .environment(proxyServer.trafficLog)
                 .environment(tokenStatsStore)
                 .environment(loginItemService)
+                .environment(AppLogManager.shared)
+                .task {
+                    await AppLogManager.shared.configure(from: configStore.config.debug)
+                }
         }
         .menuBarExtraStyle(.window)
 
@@ -32,6 +36,7 @@ struct ModelProxyApp: App {
                 .environment(proxyServer)
                 .environment(tokenStatsStore)
                 .environment(loginItemService)
+                .environment(AppLogManager.shared)
                 .onDisappear {
                     NSApp.setActivationPolicy(.accessory)
                 }

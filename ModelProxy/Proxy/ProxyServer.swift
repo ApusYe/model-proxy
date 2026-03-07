@@ -87,7 +87,7 @@ final class ProxyServer {
             do {
                 let channel = try await bootstrap.bind(host: "127.0.0.1", port: clientCfg.port).get()
                 let actualPort = channel.localAddress?.port ?? clientCfg.port
-                Logger.proxy.info("[ProxyServer] \(clientCfg.clientName, privacy: .public) listening on 127.0.0.1:\(actualPort, privacy: .public)")
+                AppLog.proxy.info("[ProxyServer] \(clientCfg.clientName) listening on 127.0.0.1:\(actualPort)")
                 slots.append(ListenerSlot(channel: channel, router: router, clientName: clientCfg.clientName))
                 boundPorts[clientCfg.clientName] = actualPort
             } catch let err as NIOCore.IOError where err.errnoCode == EADDRINUSE {
@@ -134,7 +134,7 @@ final class ProxyServer {
         try? await eventLoopGroup?.shutdownGracefully()
         eventLoopGroup = nil
 
-        Logger.proxy.info("[ProxyServer] Stopped.")
+        AppLog.proxy.info("[ProxyServer] Stopped.")
     }
 
     /// SF Symbol name for the menu bar icon. Adapts to light/dark via template rendering.

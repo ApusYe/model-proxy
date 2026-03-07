@@ -102,7 +102,7 @@ struct RoutingSnapshot: Sendable {
                 return .routed(fallback)
             }
             // Fallback vendor not configured or deleted; fall back to passthrough.
-            Logger.proxy.warning("[RoutingSnapshot] routeAll fallback vendor missing or deleted for model '\(model, privacy: .public)'; falling back to passthrough")
+            AppLog.proxy.warning("[RoutingSnapshot] routeAll fallback vendor missing or deleted for model '\(model)'; falling back to passthrough")
             return .routed(RouteTarget(
                 baseURL: passthroughBaseURL,
                 apiKey: originalAPIKey,

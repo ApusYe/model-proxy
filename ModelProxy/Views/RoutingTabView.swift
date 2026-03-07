@@ -65,6 +65,7 @@ private struct MappingRow: View {
     @State private var editSourceModel = ""
     @State private var editTargetModel = ""
     @State private var editVendorID: UUID?
+    @State private var menuWidth: CGFloat = 0
 
     private var vendorName: String {
         configStore.config.vendors.first(where: { $0.id == mapping.targetVendorID })?.name ?? "Unknown vendor"
@@ -73,9 +74,13 @@ private struct MappingRow: View {
     var body: some View {
         if isEditing {
             VStack(alignment: .leading, spacing: 8) {
-                SourceModelField(text: $editSourceModel)
-                TextField("Target model (vendor model name)", text: $editTargetModel)
-                    .autocorrectionDisabled()
+                SourceModelField(text: $editSourceModel, menuWidth: $menuWidth)
+                HStack(spacing: 4) {
+                    TextField("Target model (vendor model name)", text: $editTargetModel)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                    Color.clear.frame(width: menuWidth, height: 1)
+                }
                 Picker("Target vendor", selection: $editVendorID) {
                     Text("Select...").tag(UUID?.none)
                     ForEach(configStore.config.vendors) { vendor in
@@ -160,12 +165,17 @@ private struct AddMappingRow: View {
     @State private var selectedSourceModel: String = ""
     @State private var targetModel: String = ""
     @State private var selectedVendorID: UUID? = nil
+    @State private var menuWidth: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SourceModelField(text: $selectedSourceModel)
-            TextField("Target model (vendor model name)", text: $targetModel)
-                .autocorrectionDisabled()
+            SourceModelField(text: $selectedSourceModel, menuWidth: $menuWidth)
+            HStack(spacing: 4) {
+                TextField("Target model (vendor model name)", text: $targetModel)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                Color.clear.frame(width: menuWidth, height: 1)
+            }
             Picker("Target vendor", selection: $selectedVendorID) {
                 Text("Select...").tag(UUID?.none)
                 ForEach(configStore.config.vendors) { vendor in
@@ -208,11 +218,13 @@ private struct AddMappingRow: View {
 /// TextField with a preset menu for quick selection of known Anthropic model IDs.
 private struct SourceModelField: View {
     @Binding var text: String
+    @Binding var menuWidth: CGFloat
     @FocusState private var isFocused: Bool
 
     var body: some View {
         HStack(spacing: 4) {
             TextField("Source model (e.g. claude-haiku-4-5)", text: $text)
+                .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .focused($isFocused)
             Menu {
@@ -225,12 +237,22 @@ private struct SourceModelField: View {
                     isFocused = true
                 }
             } label: {
-                Image(systemName: "chevron.down")
-                    .font(.caption)
+                EmptyView()
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: MenuButtonWidthKey.self, value: geo.size.width)
+            })
+            .onPreferenceChange(MenuButtonWidthKey.self) { menuWidth = $0 }
             .accessibilityLabel("Preset models")
         }
+    }
+}
+
+private struct MenuButtonWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

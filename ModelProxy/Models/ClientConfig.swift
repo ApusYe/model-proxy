@@ -27,6 +27,8 @@ struct ClientConfig: Identifiable, Codable, Equatable, Sendable {
     var unmappedPolicy: UnmappedModelPolicy
     /// Vendor to route unmapped models to when policy is `.routeAll`.
     var fallbackVendorID: UUID?
+    /// Model name to substitute when routing to fallback vendor; nil = keep original model name.
+    var fallbackTargetModel: String?
 
     init(
         id: UUID = UUID(),
@@ -34,7 +36,8 @@ struct ClientConfig: Identifiable, Codable, Equatable, Sendable {
         port: Int,
         defaultUpstream: String,
         unmappedPolicy: UnmappedModelPolicy = .passthrough,
-        fallbackVendorID: UUID? = nil
+        fallbackVendorID: UUID? = nil,
+        fallbackTargetModel: String? = nil
     ) {
         self.id = id
         self.clientName = clientName
@@ -42,6 +45,7 @@ struct ClientConfig: Identifiable, Codable, Equatable, Sendable {
         self.defaultUpstream = defaultUpstream
         self.unmappedPolicy = unmappedPolicy
         self.fallbackVendorID = fallbackVendorID
+        self.fallbackTargetModel = fallbackTargetModel
     }
 
     // MARK: - Codable (legacy-tolerant)
@@ -54,6 +58,7 @@ struct ClientConfig: Identifiable, Codable, Equatable, Sendable {
         defaultUpstream = (try? c.decode(String.self, forKey: .defaultUpstream)) ?? ""
         unmappedPolicy = (try? c.decode(UnmappedModelPolicy.self, forKey: .unmappedPolicy)) ?? .passthrough
         fallbackVendorID = try? c.decode(UUID.self, forKey: .fallbackVendorID)
+        fallbackTargetModel = try? c.decode(String.self, forKey: .fallbackTargetModel)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -64,9 +69,10 @@ struct ClientConfig: Identifiable, Codable, Equatable, Sendable {
         try c.encode(defaultUpstream, forKey: .defaultUpstream)
         try c.encode(unmappedPolicy, forKey: .unmappedPolicy)
         try c.encodeIfPresent(fallbackVendorID, forKey: .fallbackVendorID)
+        try c.encodeIfPresent(fallbackTargetModel, forKey: .fallbackTargetModel)
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, clientName, port, defaultUpstream, unmappedPolicy, fallbackVendorID
+        case id, clientName, port, defaultUpstream, unmappedPolicy, fallbackVendorID, fallbackTargetModel
     }
 }

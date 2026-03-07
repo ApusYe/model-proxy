@@ -42,7 +42,7 @@ private struct ClientRowSection: View {
         default:
             toolCommand = client.clientName.lowercased()
         }
-        return "export ANTHROPIC_BASE_URL=http://localhost:\(client.port) && \(toolCommand)"
+        return "export ANTHROPIC_BASE_URL=http://localhost:\(client.port) && \\\(toolCommand)"
     }
 
     var body: some View {
@@ -97,6 +97,16 @@ private struct ClientRowSection: View {
                         Text(vendor.name).tag(UUID?.some(vendor.id))
                     }
                 }
+
+                TextField("Fallback model", text: Binding(
+                    get: { configStore.config.clients[index].fallbackTargetModel ?? "" },
+                    set: { newValue in
+                        configStore.config.clients[index].fallbackTargetModel = newValue.isEmpty ? nil : newValue
+                        configStore.saveAndReload(proxyServer: proxyServer)
+                    }
+                ), prompt: Text("e.g. qwen-plus (empty = keep original)"))
+                .autocorrectionDisabled()
+                .textContentType(nil)
             }
 
             LabeledContent("Quick start") {

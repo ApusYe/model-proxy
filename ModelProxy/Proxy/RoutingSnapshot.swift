@@ -60,12 +60,17 @@ struct RoutingSnapshot: Sendable {
         if clientConfig.unmappedPolicy == .routeAll,
            let vid = clientConfig.fallbackVendorID,
            let vendor = config.vendors.first(where: { $0.id == vid }) {
+            // Use fallbackTargetModel if non-empty; nil means keep original model name.
+            let resolvedModel: String? = {
+                guard let m = clientConfig.fallbackTargetModel, !m.isEmpty else { return nil }
+                return m
+            }()
             self.fallbackTarget = RouteTarget(
                 baseURL: vendor.baseURL,
                 apiKey: vendor.apiKey,
                 vendorName: vendor.name,
                 vendorID: vendor.id,
-                targetModel: nil,
+                targetModel: resolvedModel,
                 isPassthrough: false
             )
         } else {

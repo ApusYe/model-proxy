@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import NIOCore
 @testable import ModelProxy
 
 struct ModelProxyTests {
@@ -204,6 +205,105 @@ struct ModelProxyTests {
         stats.add(vendorID: vendorID, modelID: "claude-haiku-4-5", input: 200, output: 75)
         #expect(stats.totalInputTokens() == 300)
         #expect(stats.totalOutputTokens() == 125)
+    }
+
+    // MARK: - ResponseRelay: Anthropic streaming usage extraction
+
+    @Test func extractUsageFromAnthropicSSEStream() {
+        // message_start carries input_tokens in message.usage
+        let messageStart = """
+        data: {"type":"message_start","message":{"usage":{"input_tokens":150,"output_tokens":0}}}
+
+        """
+        // message_delta carries output_tokens in top-level usage
+        let messageDelta = """
+        data: {"type":"message_delta","usage":{"output_tokens":42}}
+
+        """
+        let allocator = ByteBufferAllocator()
+        var buf1 = allocator.buffer(capacity: messageStart.utf8.count)
+        buf1.writeString(messageStart)
+        let (input1, output1) = ResponseRelay.extractUsageFromSSEChunk(buf1)
+        #expect(input1 == 150)
+        #expect(output1 == 0)
+
+        var buf2 = allocator.buffer(capacity: messageDelta.utf8.count)
+        buf2.writeString(messageDelta)
+        let (input2, output2) = ResponseRelay.extractUsageFromSSEChunk(buf2)
+        #expect(input2 == 0)
+        #expect(output2 == 42)
+    }
+
+    // MARK: - ResponseRelay: OpenAI streaming usage extraction
+
+    @Test func extractUsageFromOpenAISSEStream() {
+        let chunk = """
+        data: {"choices":[],"usage":{"prompt_tokens":200,"completion_tokens":80}}
+
+        """
+        let allocator = ByteBufferAllocator()
+        var buf = allocator.buffer(capacity: chunk.utf8.count)
+        buf.writeString(chunk)
+        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(buf)
+        #expect(input == 200)
+        #expect(output == 80)
+    }
+
+    // MARK: - ResponseRelay: Non-streaming Anthropic JSON
+
+    @Test func extractUsageFromAnthropicJSONBody() {
+        let json = """
+        {"usage":{"input_tokens":100,"cache_read_input_tokens":50,"output_tokens":30}}
+        """.data(using: .utf8)!
+        let result = ResponseRelay.extractUsageFromJSONBody(json)
+        #expect(result != nil)
+        #expect(result?.0 == 150) // input_tokens + cache_read_input_tokens
+        #expect(result?.1 == 30)
+    }
+
+    // MARK: - ResponseRelay: Non-streaming OpenAI JSON
+
+    @Test func extractUsageFromOpenAIJSONBody() {
+        let json = """
+        {"usage":{"prompt_tokens":300,"completion_tokens":120}}
+        """.data(using: .utf8)!
+        let result = ResponseRelay.extractUsageFromJSONBody(json)
+        #expect(result != nil)
+        #expect(result?.0 == 300)
+        #expect(result?.1 == 120)
+    }
+
+    // MARK: - ResponseRelay: Missing/malformed usage
+
+    @Test func extractUsageFromMissingUsageReturnsNil() {
+        let json = """
+        {"id":"msg_123","content":[]}
+        """.data(using: .utf8)!
+        let result = ResponseRelay.extractUsageFromJSONBody(json)
+        #expect(result == nil)
+    }
+
+    @Test func extractUsageFromSSEChunkWithNoUsage() {
+        let chunk = """
+        data: {"type":"content_block_delta","delta":{"text":"hello"}}
+
+        """
+        let allocator = ByteBufferAllocator()
+        var buf = allocator.buffer(capacity: chunk.utf8.count)
+        buf.writeString(chunk)
+        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(buf)
+        #expect(input == 0)
+        #expect(output == 0)
+    }
+
+    @Test func extractUsageFromSSEDoneMarker() {
+        let chunk = "data: [DONE]\n\n"
+        let allocator = ByteBufferAllocator()
+        var buf = allocator.buffer(capacity: chunk.utf8.count)
+        buf.writeString(chunk)
+        let (input, output) = ResponseRelay.extractUsageFromSSEChunk(buf)
+        #expect(input == 0)
+        #expect(output == 0)
     }
 
     // MARK: - DailyTokenSnapshot round-trip

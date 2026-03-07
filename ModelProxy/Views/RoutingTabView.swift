@@ -24,7 +24,6 @@ struct RoutingTabView: View {
 
                 if showAddRow {
                     AddMappingRow(
-                        knownAnthropicModels: KnownAnthropicModels.all,
                         onAdd: { newMapping in
                             configStore.config.modelMappings.append(newMapping)
                             configStore.saveAndReload(proxyServer: proxyServer)
@@ -40,7 +39,7 @@ struct RoutingTabView: View {
                     Text("Model Routing Rules")
                     Spacer()
                     Button("Add Rule") { showAddRow = true }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.mpInline)
                         .disabled(showAddRow || configStore.config.vendors.isEmpty)
                         .accessibilityLabel("Add Routing Rule")
                 }
@@ -74,12 +73,7 @@ private struct MappingRow: View {
     var body: some View {
         if isEditing {
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Source model", selection: $editSourceModel) {
-                    Text("Select...").tag("")
-                    ForEach(KnownAnthropicModels.all, id: \.self) { model in
-                        Text(model).tag(model)
-                    }
-                }
+                SourceModelField(text: $editSourceModel)
                 TextField("Target model (vendor model name)", text: $editTargetModel)
                     .autocorrectionDisabled()
                 Picker("Target vendor", selection: $editVendorID) {
@@ -89,23 +83,24 @@ private struct MappingRow: View {
                     }
                 }
                 HStack {
-                    Button("Cancel") { isEditing = false }
-                        .buttonStyle(.borderless)
                     Spacer()
+                    Button("Cancel") { isEditing = false }
+                        .buttonStyle(.mpCancel)
                     Button("Save") {
+                        let trimmedSource = editSourceModel.trimmingCharacters(in: .whitespaces)
                         guard let index = configStore.config.modelMappings.firstIndex(where: { $0.id == mapping.id }),
-                              !editSourceModel.isEmpty,
+                              !trimmedSource.isEmpty,
                               !editTargetModel.trimmingCharacters(in: .whitespaces).isEmpty,
                               let vendorID = editVendorID else { return }
-                        configStore.config.modelMappings[index].sourceModel = editSourceModel
+                        configStore.config.modelMappings[index].sourceModel = trimmedSource
                         configStore.config.modelMappings[index].targetModel = editTargetModel.trimmingCharacters(in: .whitespaces)
                         configStore.config.modelMappings[index].targetVendorID = vendorID
                         configStore.saveAndReload(proxyServer: proxyServer)
                         isEditing = false
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.mpPrimary)
                     .disabled(
-                        editSourceModel.isEmpty ||
+                        editSourceModel.trimmingCharacters(in: .whitespaces).isEmpty ||
                         editTargetModel.trimmingCharacters(in: .whitespaces).isEmpty ||
                         editVendorID == nil
                     )
@@ -132,13 +127,12 @@ private struct MappingRow: View {
                     editVendorID = mapping.targetVendorID
                     isEditing = true
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.mpInline)
                 .accessibilityLabel("Edit rule for \(mapping.sourceModel)")
                 Button("Delete") {
                     showDeleteConfirmation = true
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.red)
+                .buttonStyle(.mpDestructive)
                 .accessibilityLabel("Delete rule for \(mapping.sourceModel)")
             }
             .confirmationDialog(
@@ -160,7 +154,6 @@ private struct MappingRow: View {
 
 private struct AddMappingRow: View {
     @Environment(ConfigStore.self) private var configStore
-    let knownAnthropicModels: [String]
     let onAdd: (ModelMapping) -> Void
     let onCancel: () -> Void
 
@@ -170,12 +163,7 @@ private struct AddMappingRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Source model", selection: $selectedSourceModel) {
-                Text("Select...").tag("")
-                ForEach(knownAnthropicModels, id: \.self) { model in
-                    Text(model).tag(model)
-                }
-            }
+            SourceModelField(text: $selectedSourceModel)
             TextField("Target model (vendor model name)", text: $targetModel)
                 .autocorrectionDisabled()
             Picker("Target vendor", selection: $selectedVendorID) {
@@ -185,24 +173,25 @@ private struct AddMappingRow: View {
                 }
             }
             HStack {
-                Button("Cancel", action: onCancel)
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Cancel")
                 Spacer()
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(.mpCancel)
+                    .accessibilityLabel("Cancel")
                 Button("Add") {
-                    guard !selectedSourceModel.isEmpty,
+                    let trimmedSource = selectedSourceModel.trimmingCharacters(in: .whitespaces)
+                    guard !trimmedSource.isEmpty,
                           !targetModel.trimmingCharacters(in: .whitespaces).isEmpty,
                           let vendorID = selectedVendorID else { return }
                     let mapping = ModelMapping(
-                        sourceModel: selectedSourceModel,
+                        sourceModel: trimmedSource,
                         targetModel: targetModel.trimmingCharacters(in: .whitespaces),
                         targetVendorID: vendorID
                     )
                     onAdd(mapping)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.mpPrimary)
                 .disabled(
-                    selectedSourceModel.isEmpty ||
+                    selectedSourceModel.trimmingCharacters(in: .whitespaces).isEmpty ||
                     targetModel.trimmingCharacters(in: .whitespaces).isEmpty ||
                     selectedVendorID == nil
                 )
@@ -211,8 +200,37 @@ private struct AddMappingRow: View {
         }
         .padding(.vertical, 4)
         .onAppear {
-            selectedSourceModel = knownAnthropicModels.first ?? ""
             selectedVendorID = configStore.config.vendors.first?.id
+        }
+    }
+}
+
+/// TextField with a preset menu for quick selection of known Anthropic model IDs.
+private struct SourceModelField: View {
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            TextField("Source model (e.g. claude-haiku-4-5)", text: $text)
+                .autocorrectionDisabled()
+                .focused($isFocused)
+            Menu {
+                ForEach(KnownAnthropicModels.all, id: \.self) { model in
+                    Button(model) { text = model }
+                }
+                Divider()
+                Button("Custom…") {
+                    text = ""
+                    isFocused = true
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.caption)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Preset models")
         }
     }
 }

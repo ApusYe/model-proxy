@@ -75,7 +75,10 @@ struct RoutingSnapshot: Sendable {
 
     /// Resolve a route for the given model.
     func resolve(model: String, originalAPIKey: String) -> ResolveResult {
-        if let mapped = modelMappings[model] {
+        // Exact match first, then prefix match so "claude-haiku-4-5" catches "claude-haiku-4-5-20251001".
+        // Longest-prefix-wins: if both "claude-3" and "claude-3-5-haiku" match, pick the longer key.
+        if let mapped = modelMappings[model]
+            ?? modelMappings.filter({ model.hasPrefix($0.key) }).max(by: { $0.key.count < $1.key.count })?.value {
             return .routed(mapped)
         }
 

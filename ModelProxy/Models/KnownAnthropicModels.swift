@@ -1,10 +1,7 @@
 import Foundation
 
-/// Canonical list of supported Anthropic model IDs.
-/// Used by RoutingTabView picker and deprecation detection on launch.
-/// Update this list when Anthropic releases or retires models.
-/// Maintenance policy: add new model names on release; keep retired models for one release
-/// cycle to avoid false deprecation warnings on existing configs, then remove.
+/// Preset Anthropic model IDs shown in the RoutingTabView source model picker.
+/// Users can also type custom model IDs not in this list.
 enum KnownAnthropicModels {
     static let all: [String] = [
         "claude-haiku-4-5",

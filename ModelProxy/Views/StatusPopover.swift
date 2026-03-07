@@ -45,8 +45,6 @@ struct StatusPopover: View {
                 showingCorruptAlert = true
                 configStore.clearCorruptFlag()
             }
-            let stale = DeprecationChecker.staleSourceModels(in: configStore.config.modelMappings)
-            proxyServer.setDeprecationWarnings(stale)
         }
         .alert("Config Reset", isPresented: $showingCorruptAlert) {
             Button("OK") { }
@@ -60,7 +58,7 @@ struct StatusPopover: View {
     }
 
     private var bannerIsVisible: Bool {
-        proxyServer.lastError != nil || !proxyServer.deprecationWarnings.isEmpty
+        proxyServer.lastError != nil
     }
 
     // MARK: - Banner
@@ -97,22 +95,6 @@ struct StatusPopover: View {
             .accessibilityLabel("Warning: \(error)")
         }
 
-        if !proxyServer.deprecationWarnings.isEmpty {
-            let modelList = proxyServer.deprecationWarnings.joined(separator: ", ")
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow)
-                Text("Deprecated model mappings: \(modelList)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.yellow.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .accessibilityLabel("Warning: deprecated model mappings \(modelList)")
-        }
     }
 
     // MARK: - Client Header

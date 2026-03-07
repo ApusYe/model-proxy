@@ -24,8 +24,6 @@ final class ProxyServer {
     let trafficLog: TrafficLog = TrafficLog()
     /// Token stats store shared with all channel handlers.
     let tokenStatsStore: TokenStatsStore
-    /// Source model IDs that are in config but not in KnownAnthropicModels.all.
-    private(set) var deprecationWarnings: [String] = []
 
     // MARK: - Init
 
@@ -141,17 +139,11 @@ final class ProxyServer {
 
     /// SF Symbol name for the menu bar icon. Adapts to light/dark via template rendering.
     /// States in priority order: not running → xmark.circle, partial error → exclamationmark.circle,
-    /// deprecation → exclamationmark.triangle, normal → arrow.triangle.branch.
+    /// normal → arrow.triangle.branch.
     var menuBarSymbol: String {
         guard isRunning else { return "xmark.circle" }
         if lastError != nil { return "exclamationmark.circle" }
-        if !deprecationWarnings.isEmpty { return "exclamationmark.triangle" }
         return "arrow.triangle.branch"
-    }
-
-    /// Called by StatusPopover after loading config to flag stale model mappings.
-    func setDeprecationWarnings(_ warnings: [String]) {
-        deprecationWarnings = warnings
     }
 
     // MARK: - Hot Reload

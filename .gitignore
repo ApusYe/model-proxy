@@ -20,3 +20,10 @@ Packages/
 
 # macOS
 .DS_Store
+
+# Temp files
+/Screenshots
+/Icons
+
+# sense files
+.claude/notion-sync.local.md

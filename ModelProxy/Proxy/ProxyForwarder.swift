@@ -91,13 +91,16 @@ enum ProxyForwarder {
 
         let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
             ? .passthrough
-            : .mapped(vendorName: target.vendorName)
+            : .mapped(targetModel: target.targetModel ?? model)
+
+        let startTime = Date.now
 
         let upstreamResponse: HTTPClientResponse
         do {
             upstreamResponse = try await httpClient.execute(upstreamRequest, timeout: .seconds(120))
         } catch {
-            let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: 502)
+            let duration = Date.now.timeIntervalSince(startTime)
+            let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: 502, duration: duration)
             await MainActor.run { trafficLog.append(entry) }
             await Self.sendError(channel: channel, status: .badGateway, message: "Upstream unreachable: \(error)")
             return
@@ -123,7 +126,8 @@ enum ProxyForwarder {
 
         // 9. Publish traffic event with actual upstream status code.
         let statusCode = Int(upstreamResponse.status.code)
-        let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: statusCode)
+        let duration = Date.now.timeIntervalSince(startTime)
+        let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: statusCode, duration: duration)
         await MainActor.run { trafficLog.append(entry) }
     }
 

@@ -362,7 +362,7 @@ private struct TrafficRowView: View {
                 .foregroundStyle(statusColor)
                 .frame(width: 28, alignment: .trailing)
 
-            Text(relativeTime)
+            Text(durationText)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .frame(width: 44, alignment: .trailing)
@@ -370,7 +370,7 @@ private struct TrafficRowView: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(entry.model), \(routeLabel), HTTP \(entry.httpStatus), \(relativeTime) ago")
+        .accessibilityLabel("\(entry.model), \(routeLabel), HTTP \(entry.httpStatus), \(durationText)")
     }
 
     private var statusColor: Color {
@@ -384,19 +384,19 @@ private struct TrafficRowView: View {
     private var routeLabel: String {
         switch entry.routeType {
         case .passthrough: return "pass"
-        case .mapped(let vendor): return vendor
+        case .mapped(let targetModel): return targetModel
         case .blocked: return "blocked"
         }
     }
 
-    private var relativeTime: String {
-        let elapsed = Date.now.timeIntervalSince(entry.timestamp)
-        if elapsed < 60 {
-            return "\(Int(elapsed))s"
-        } else if elapsed < 3600 {
-            return "\(Int(elapsed / 60))m"
+    private var durationText: String {
+        guard let d = entry.duration else { return "-" }
+        if d < 1 {
+            return String(format: "%.1fs", d)
+        } else if d < 60 {
+            return "\(Int(d))s"
         } else {
-            return "\(Int(elapsed / 3600))h"
+            return String(format: "%.1fm", d / 60)
         }
     }
 }
@@ -410,7 +410,7 @@ private struct TrafficRowView: View {
         .environment(ProxyServer(tokenStatsStore: store))
         .environment({
             let log = TrafficLog()
-            log.append(TrafficEntry(model: "claude-opus-4-6", routeType: .mapped(vendorName: "DashScope"), httpStatus: 200))
+            log.append(TrafficEntry(model: "claude-opus-4-6", routeType: .mapped(targetModel: "qwen-plus"), httpStatus: 200, duration: 12.3))
             log.append(TrafficEntry(model: "claude-sonnet-4-6", routeType: .passthrough, httpStatus: 200))
             log.append(TrafficEntry(model: "gpt-4o", routeType: .blocked, httpStatus: 403))
             return log

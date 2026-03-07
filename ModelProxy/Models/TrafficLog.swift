@@ -7,7 +7,7 @@ import Observation
 struct TrafficEntry: Identifiable, Sendable {
     enum RouteType: Sendable {
         case passthrough
-        case mapped(vendorName: String)
+        case mapped(targetModel: String)
         case blocked
     }
 
@@ -17,12 +17,15 @@ struct TrafficEntry: Identifiable, Sendable {
     /// HTTP status returned to the client (200, 403, 502, etc.)
     let httpStatus: Int
     let timestamp: Date
+    /// Total request duration in seconds; nil for blocked requests (no upstream call).
+    let duration: TimeInterval?
 
-    init(model: String, routeType: RouteType, httpStatus: Int, timestamp: Date = .now) {
+    init(model: String, routeType: RouteType, httpStatus: Int, duration: TimeInterval? = nil, timestamp: Date = .now) {
         self.id = UUID()
         self.model = model
         self.routeType = routeType
         self.httpStatus = httpStatus
+        self.duration = duration
         self.timestamp = timestamp
     }
 }

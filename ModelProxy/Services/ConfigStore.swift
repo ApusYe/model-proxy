@@ -11,16 +11,8 @@ final class ConfigStore {
     /// True if config.json was corrupt at launch and was reset to defaults.
     private(set) var didResetFromCorrupt: Bool = false
 
-    private static let appSupportURL: URL = {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return base.appendingPathComponent("ModelProxy", isDirectory: true)
-    }()
-
     private static var configFileURL: URL {
-        appSupportURL.appendingPathComponent("config.json")
+        AppPaths.appSupport.appendingPathComponent("config.json")
     }
 
     // MARK: - Init
@@ -42,8 +34,8 @@ final class ConfigStore {
         let fm = FileManager.default
 
         // Ensure directory exists.
-        if !fm.fileExists(atPath: appSupportURL.path) {
-            try? fm.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: AppPaths.appSupport.path) {
+            try? fm.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
         }
 
         guard fm.fileExists(atPath: fileURL.path),

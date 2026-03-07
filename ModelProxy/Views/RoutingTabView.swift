@@ -62,6 +62,7 @@ private struct MappingRow: View {
     let mapping: ModelMapping
 
     @State private var isEditing = false
+    @State private var showDeleteConfirmation = false
     @State private var editSourceModel = ""
     @State private var editTargetModel = ""
     @State private var editVendorID: UUID?
@@ -134,12 +135,24 @@ private struct MappingRow: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Edit rule for \(mapping.sourceModel)")
                 Button("Delete") {
-                    configStore.config.modelMappings.removeAll { $0.id == mapping.id }
-                    configStore.saveAndReload(proxyServer: proxyServer)
+                    showDeleteConfirmation = true
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
                 .accessibilityLabel("Delete rule for \(mapping.sourceModel)")
+            }
+            .confirmationDialog(
+                "Delete routing rule?",
+                isPresented: $showDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    configStore.config.modelMappings.removeAll { $0.id == mapping.id }
+                    configStore.saveAndReload(proxyServer: proxyServer)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Remove the rule for \"\(mapping.sourceModel)\"? This cannot be undone.")
             }
         }
     }

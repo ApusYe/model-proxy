@@ -54,7 +54,11 @@ struct VendorEditSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || baseURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(
+                    name.trimmingCharacters(in: .whitespaces).isEmpty
+                    || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+                    || URL(string: baseURL.trimmingCharacters(in: .whitespaces))?.scheme == nil
+                )
                 .accessibilityLabel(isEditing ? "Save Vendor" : "Add Vendor")
             }
             .padding()

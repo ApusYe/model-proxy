@@ -49,8 +49,8 @@ private struct ClientRowSection: View {
         Section(client.clientName) {
             TextField("Port", text: $portText)
                 .onAppear { portText = "\(client.port)" }
-                .onChange(of: portText) { _, newValue in
-                    guard let port = Int(newValue), (1024...65535).contains(port) else { return }
+                .onSubmit {
+                    guard let port = Int(portText), (1024...65535).contains(port) else { return }
                     configStore.config.clients[index].port = port
                     configStore.saveAndReload(proxyServer: proxyServer)
                 }

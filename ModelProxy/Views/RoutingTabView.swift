@@ -68,7 +68,6 @@ private struct MappingRow: View {
     @State private var editBackupTargetModel = ""
     @State private var editBackupVendorID: UUID?
     @State private var showBackupFields = false
-    @State private var menuWidth: CGFloat = 0
 
     private var vendorName: String {
         configStore.config.vendors.first(where: { $0.id == mapping.targetVendorID })?.name ?? "Unknown vendor"
@@ -77,55 +76,44 @@ private struct MappingRow: View {
     var body: some View {
         if isEditing {
             VStack(alignment: .leading, spacing: 8) {
-                SourceModelField(text: $editSourceModel, menuWidth: $menuWidth)
-                HStack(spacing: 4) {
-                    TextField("Target model (vendor model name)", text: $editTargetModel)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                    Color.clear.frame(width: menuWidth, height: 1)
-                }
-                Picker("Target vendor", selection: $editVendorID) {
-                    Text("Select...").tag(UUID?.none)
-                    ForEach(configStore.config.vendors) { vendor in
-                        Text(vendor.name).tag(UUID?.some(vendor.id))
-                    }
-                }
+                SourceModelField(text: $editSourceModel)
+                PlainModelField(placeholder: "Target model (vendor model name)", text: $editTargetModel)
+                VendorMenuField(
+                    placeholder: "Target vendor",
+                    selection: $editVendorID,
+                    vendors: configStore.config.vendors,
+                    clients: configStore.config.clients
+                )
 
                 if showBackupFields {
                     Divider()
                     Text("Backup Target")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    HStack(spacing: 4) {
-                        TextField("Backup model (vendor model name)", text: $editBackupTargetModel)
-                            .textFieldStyle(.roundedBorder)
-                            .autocorrectionDisabled()
-                        Color.clear.frame(width: menuWidth, height: 1)
-                    }
-                    Picker("Backup vendor", selection: $editBackupVendorID) {
-                        Text("Select...").tag(UUID?.none)
-                        ForEach(configStore.config.vendors) { vendor in
-                            Text(vendorPickerLabel(vendor: vendor, clients: configStore.config.clients))
-                                .tag(UUID?.some(vendor.id))
-                        }
-                    }
-                    Button("Remove Backup") {
-                        showBackupFields = false
-                        editBackupTargetModel = ""
-                        editBackupVendorID = nil
-                    }
-                    .buttonStyle(.mpDestructive)
-                    .controlSize(.small)
-                } else {
-                    Button("Add Backup Target") {
-                        showBackupFields = true
-                    }
-                    .buttonStyle(.mpInline)
-                    .controlSize(.small)
+                    PlainModelField(placeholder: "Backup model (vendor model name)", text: $editBackupTargetModel)
+                    VendorMenuField(
+                        placeholder: "Backup vendor",
+                        selection: $editBackupVendorID,
+                        vendors: configStore.config.vendors,
+                        clients: configStore.config.clients
+                    )
                 }
 
                 HStack {
                     Spacer()
+                    if showBackupFields {
+                        Button("Remove Backup") {
+                            showBackupFields = false
+                            editBackupTargetModel = ""
+                            editBackupVendorID = nil
+                        }
+                        .buttonStyle(.mpDestructive)
+                    } else {
+                        Button("Add Backup Target") {
+                            showBackupFields = true
+                        }
+                        .buttonStyle(.mpCancel)
+                    }
                     Button("Cancel") { isEditing = false }
                         .buttonStyle(.mpCancel)
                     Button("Save") {
@@ -244,59 +232,47 @@ private struct AddMappingRow: View {
     @State private var backupTargetModel: String = ""
     @State private var backupTargetVendorID: UUID? = nil
     @State private var showBackupFields: Bool = false
-    @State private var menuWidth: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SourceModelField(text: $selectedSourceModel, menuWidth: $menuWidth)
-            HStack(spacing: 4) {
-                TextField("Target model (vendor model name)", text: $targetModel)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                Color.clear.frame(width: menuWidth, height: 1)
-            }
-            Picker("Target vendor", selection: $selectedVendorID) {
-                Text("Select...").tag(UUID?.none)
-                ForEach(configStore.config.vendors) { vendor in
-                    Text(vendor.name).tag(UUID?.some(vendor.id))
-                }
-            }
+            SourceModelField(text: $selectedSourceModel)
+            PlainModelField(placeholder: "Target model (vendor model name)", text: $targetModel)
+            VendorMenuField(
+                placeholder: "Target vendor",
+                selection: $selectedVendorID,
+                vendors: configStore.config.vendors,
+                clients: configStore.config.clients
+            )
 
             if showBackupFields {
                 Divider()
                 Text("Backup Target")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    TextField("Backup model (vendor model name)", text: $backupTargetModel)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                    Color.clear.frame(width: menuWidth, height: 1)
-                }
-                Picker("Backup vendor", selection: $backupTargetVendorID) {
-                    Text("Select...").tag(UUID?.none)
-                    ForEach(configStore.config.vendors) { vendor in
-                        Text(vendorPickerLabel(vendor: vendor, clients: configStore.config.clients))
-                            .tag(UUID?.some(vendor.id))
-                    }
-                }
-                Button("Remove Backup") {
-                    showBackupFields = false
-                    backupTargetModel = ""
-                    backupTargetVendorID = nil
-                }
-                .buttonStyle(.mpDestructive)
-                .controlSize(.small)
-            } else {
-                Button("Add Backup Target") {
-                    showBackupFields = true
-                }
-                .buttonStyle(.mpInline)
-                .controlSize(.small)
+                PlainModelField(placeholder: "Backup model (vendor model name)", text: $backupTargetModel)
+                VendorMenuField(
+                    placeholder: "Backup vendor",
+                    selection: $backupTargetVendorID,
+                    vendors: configStore.config.vendors,
+                    clients: configStore.config.clients
+                )
             }
 
             HStack {
                 Spacer()
+                if showBackupFields {
+                    Button("Remove Backup") {
+                        showBackupFields = false
+                        backupTargetModel = ""
+                        backupTargetVendorID = nil
+                    }
+                    .buttonStyle(.mpDestructive)
+                } else {
+                    Button("Add Backup Target") {
+                        showBackupFields = true
+                    }
+                    .buttonStyle(.mpCancel)
+                }
                 Button("Cancel", action: onCancel)
                     .buttonStyle(.mpCancel)
                     .accessibilityLabel("Cancel")
@@ -342,35 +318,88 @@ private struct AddMappingRow: View {
 /// TextField with a preset menu for quick selection of known Anthropic model IDs.
 private struct SourceModelField: View {
     @Binding var text: String
-    @Binding var menuWidth: CGFloat
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 4) {
-            TextField("Source model (e.g. claude-haiku-4-5)", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .focused($isFocused)
-            Menu {
-                ForEach(KnownAnthropicModels.all, id: \.self) { model in
-                    Button(model) { text = model }
+        TextField("Source model (e.g. claude-haiku-4-5)", text: $text)
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled()
+            .focused($isFocused)
+            .overlay(alignment: .trailing) {
+                Menu {
+                    ForEach(KnownAnthropicModels.all, id: \.self) { model in
+                        Button(model) { text = model }
+                    }
+                    Divider()
+                    Button("Custom...") {
+                        text = ""
+                        isFocused = true
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: menuIconWidth)
+                        .contentShape(Rectangle())
                 }
-                Divider()
-                Button("Custom…") {
-                    text = ""
-                    isFocused = true
-                }
-            } label: {
-                EmptyView()
+                .menuIndicator(.hidden)
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel("Preset models")
+                .padding(.trailing, 4)
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .background(GeometryReader { geo in
-                Color.clear.preference(key: MenuButtonWidthKey.self, value: geo.size.width)
-            })
-            .onPreferenceChange(MenuButtonWidthKey.self) { menuWidth = $0 }
-            .accessibilityLabel("Preset models")
+    }
+}
+
+private struct PlainModelField: View {
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .autocorrectionDisabled()
+    }
+}
+
+private struct VendorMenuField: View {
+    let placeholder: String
+    @Binding var selection: UUID?
+    let vendors: [Vendor]
+    let clients: [ClientConfig]
+
+    private var displayName: String {
+        guard let vendorID = selection,
+              let vendor = vendors.first(where: { $0.id == vendorID }) else {
+            return ""
         }
+        return vendor.name
+    }
+
+    var body: some View {
+        TextField(placeholder, text: .constant(displayName))
+            .textFieldStyle(.roundedBorder)
+            .allowsHitTesting(false)
+            .overlay(alignment: .trailing) {
+                Menu {
+                    Button("Select...") { selection = nil }
+                    Divider()
+                    ForEach(vendors) { vendor in
+                        Button(vendorPickerLabel(vendor: vendor, clients: clients)) {
+                            selection = vendor.id
+                        }
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: menuIconWidth)
+                        .contentShape(Rectangle())
+                }
+                .menuIndicator(.hidden)
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel(placeholder)
+                .padding(.trailing, 4)
+            }
     }
 }
 
@@ -383,9 +412,4 @@ private func vendorPickerLabel(vendor: Vendor, clients: [ClientConfig]) -> Strin
     return "\(vendor.name) (\(client.clientName) only)"
 }
 
-private struct MenuButtonWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
+private let menuIconWidth: CGFloat = 24

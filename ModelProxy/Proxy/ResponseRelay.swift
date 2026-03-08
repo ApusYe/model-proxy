@@ -17,7 +17,8 @@ enum ResponseRelay {
     static func relay(
         upstreamResponse: HTTPClientResponse,
         to channel: any Channel,
-        onUsage: UsageCallback? = nil
+        onUsage: UsageCallback? = nil,
+        requestID: String
     ) async {
         // 1. Forward status + response headers.
         var responseHead = HTTPResponseHead(
@@ -34,6 +35,8 @@ enum ResponseRelay {
         // Determine response type from Content-Type header.
         let contentType = upstreamResponse.headers.first(name: "content-type") ?? ""
         let isSSE = contentType.lowercased().contains("text/event-stream")
+        let statusCode = Int(upstreamResponse.status.code)
+        let isError = statusCode >= 400
 
         do {
             try await channel.writeAndFlush(
@@ -45,6 +48,7 @@ enum ResponseRelay {
                 // Anthropic splits input_tokens (message_start) and output_tokens (message_delta).
                 var accumulatedInput = 0
                 var accumulatedOutput = 0
+                var errorAccumulator = Data()
                 for try await chunk in upstreamResponse.body {
                     try await channel.writeAndFlush(
                         NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
@@ -56,17 +60,24 @@ enum ResponseRelay {
                         accumulatedInput += input
                         accumulatedOutput += output
                     }
+                    if isError, let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                        errorAccumulator.append(bytes)
+                    }
                 }
                 // Report accumulated totals at stream end.
                 if let callback = onUsage, (accumulatedInput > 0 || accumulatedOutput > 0) {
                     callback(accumulatedInput, accumulatedOutput)
+                }
+                if isError, !errorAccumulator.isEmpty {
+                    let preview = String(data: errorAccumulator.prefix(2048), encoding: .utf8) ?? "<non-UTF8, \(errorAccumulator.count)B>"
+                    AppLog.proxy.warning("[Proxy] [\(requestID)] Upstream \(statusCode) body (\(errorAccumulator.count)B): \(preview)")
                 }
             } else {
                 // 2b. Non-streaming: forward chunks immediately; accumulate a parallel copy
                 // for token usage extraction. This doubles peak memory for the response body,
                 // but most API responses are small enough that this is acceptable.
                 var bodyAccumulator = Data()
-                let shouldAccumulate = onUsage != nil
+                let shouldAccumulate = onUsage != nil || isError
 
                 for try await chunk in upstreamResponse.body {
                     try await channel.writeAndFlush(
@@ -86,6 +97,10 @@ enum ResponseRelay {
                         callback(input, output)
                     }
                 }
+                if isError, !bodyAccumulator.isEmpty {
+                    let preview = String(data: bodyAccumulator.prefix(2048), encoding: .utf8) ?? "<non-UTF8, \(bodyAccumulator.count)B>"
+                    AppLog.proxy.warning("[Proxy] [\(requestID)] Upstream \(statusCode) body (\(bodyAccumulator.count)B): \(preview)")
+                }
             }
 
             // 3. Signal end of response.
@@ -94,7 +109,7 @@ enum ResponseRelay {
             ).get()
 
         } catch {
-            AppLog.proxy.warning("[ResponseRelay] Write error (client may have disconnected): \(error)")
+            AppLog.proxy.warning("[Proxy] [\(requestID)] Response relay write error (client may have disconnected): \(error)")
         }
 
         try? await channel.close().get()

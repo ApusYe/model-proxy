@@ -17,6 +17,9 @@ enum ProxyForwarder {
         trafficLog: TrafficLog,
         tokenStatsStore: TokenStatsStore
     ) async {
+        let requestID = String(UUID().uuidString.prefix(8))
+        let startTime = Date.now
+
         // 1. Extract original API key (support both x-api-key and Authorization: Bearer).
         let originalAPIKey = Self.extractAPIKey(from: head.headers)
 
@@ -36,19 +39,24 @@ enum ProxyForwarder {
         case .routed(let t):
             target = t
         case .blocked(let reason):
-            AppLog.proxy.info("[Proxy] \(head.method.rawValue) \(head.uri) model=\(model) BLOCKED")
+            AppLog.proxy.info("[Proxy] [\(requestID)] \(head.method.rawValue) \(head.uri) model=\(model) BLOCKED")
             let blockedEntry = TrafficEntry(model: model, routeType: .blocked, httpStatus: 403)
             await MainActor.run { trafficLog.append(blockedEntry) }
             await Self.sendError(channel: channel, status: .forbidden, message: reason)
             return
         }
 
-        // Log request routing (no API keys or body content).
-        let routeType = target.isPassthrough ? "passthrough" : "mapped → \(target.vendorName)"
-        AppLog.proxy.info("[Proxy] \(head.method.rawValue) \(head.uri) model=\(model) \(routeType) → \(target.baseURL)")
-
         // 3. Preserve original body BEFORE model field replacement (needed for failover retry).
         let originalBodyData = body.getData(at: body.readerIndex, length: body.readableBytes) ?? Data()
+
+        // Log request routing (no API keys or body content).
+        let routeType = target.isPassthrough ? "passthrough" : "mapped → \(target.vendorName)"
+        let originalCL = head.headers.first(name: "content-length") ?? "absent"
+        let hasThinking = Self.containsJSONStringField(originalBodyData, field: "thinking")
+        let hasSignature = Self.containsJSONStringField(originalBodyData, field: "signature")
+        AppLog.proxy.info(
+            "[Proxy] [\(requestID)] \(head.method.rawValue) \(head.uri) model=\(model) \(routeType) → \(target.baseURL) body=\(originalBodyData.count)B cl=\(originalCL) thinking=\(hasThinking) signature=\(hasSignature)"
+        )
 
         // 4. Build and send upstream request.
         let (upstreamResponse, usedTarget) = await Self.executeWithFailover(
@@ -58,7 +66,8 @@ enum ProxyForwarder {
             model: model,
             router: router,
             httpClient: httpClient,
-            routeState: &routeState
+            routeState: &routeState,
+            requestID: requestID
         )
 
         // 5. Write back mutated route state.
@@ -66,7 +75,7 @@ enum ProxyForwarder {
 
         guard let upstreamResponse, let usedTarget else {
             // executeWithFailover already sent error to channel on total failure.
-            let duration = Date.now.timeIntervalSince(Date.now)
+            let duration = Date.now.timeIntervalSince(startTime)
             let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
                 ? .passthrough
                 : .mapped(targetModel: target.targetModel ?? model)
@@ -92,17 +101,20 @@ enum ProxyForwarder {
 
         // 7. Log status with readable text.
         let statusCode = Int(upstreamResponse.status.code)
-        AppLog.proxy.debug("[Proxy] Response: \(statusCode) \(HTTPStatusText.text(for: statusCode)) model=\(model) vendor=\(usedTarget.vendorName)")
+        let elapsedMS = Int(Date.now.timeIntervalSince(startTime) * 1000)
+        AppLog.proxy.debug(
+            "[Proxy] [\(requestID)] Response: \(statusCode) \(HTTPStatusText.text(for: statusCode)) model=\(model) vendor=\(usedTarget.vendorName) \(elapsedMS)ms"
+        )
 
         // 8. Relay response.
         await ResponseRelay.relay(
             upstreamResponse: upstreamResponse,
             to: channel,
-            onUsage: onUsage
+            onUsage: onUsage,
+            requestID: requestID
         )
 
         // 9. Publish traffic event with actual upstream status code.
-        let startTime = Date.now
         let duration = Date.now.timeIntervalSince(startTime)
         let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: statusCode, duration: duration)
         await MainActor.run { trafficLog.append(entry) }
@@ -119,7 +131,8 @@ enum ProxyForwarder {
         model: String,
         router: RequestRouter,
         httpClient: HTTPClient,
-        routeState: inout RoutingSnapshot.RouteState
+        routeState: inout RoutingSnapshot.RouteState,
+        requestID: String
     ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?) {
 
         // Try with primary (or current active) target.
@@ -127,7 +140,8 @@ enum ProxyForwarder {
             head: head,
             originalBodyData: originalBodyData,
             target: primaryTarget,
-            httpClient: httpClient
+            httpClient: httpClient,
+            requestID: requestID
         )
 
         guard let primaryResponse else {
@@ -159,13 +173,16 @@ enum ProxyForwarder {
             // Get backup targets from router.
             if let allTargets = await router.targets(for: model), allTargets.count > 1 {
                 let backupTarget = (primaryTarget.vendorID == allTargets[0].vendorID) ? allTargets[1] : allTargets[0]
-                AppLog.proxy.info("[Proxy] Rate limited on \(primaryTarget.vendorName), failing over to \(backupTarget.vendorName)")
+                AppLog.proxy.info(
+                    "[Proxy] [\(requestID)] Rate limited on \(primaryTarget.vendorName), failing over to \(backupTarget.vendorName)"
+                )
 
                 let backupResponse = await Self.executeUpstream(
                     head: head,
                     originalBodyData: originalBodyData,
                     target: backupTarget,
-                    httpClient: httpClient
+                    httpClient: httpClient,
+                    requestID: requestID
                 )
                 if let backupResponse {
                     if Int(backupResponse.status.code) < 400 {
@@ -196,7 +213,8 @@ enum ProxyForwarder {
         head: HTTPRequestHead,
         originalBodyData: Data,
         target: RoutingSnapshot.RouteTarget,
-        httpClient: HTTPClient
+        httpClient: HTTPClient,
+        requestID: String
     ) async -> HTTPClientResponse? {
         let finalURLString = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/")) + head.uri
         guard URL(string: finalURLString) != nil else { return nil }
@@ -205,7 +223,7 @@ enum ProxyForwarder {
         var upstreamHeaders = HTTPHeaders()
         for (name, value) in head.headers {
             let lower = name.lowercased()
-            if lower == "host" || lower == "connection" || lower == "transfer-encoding" { continue }
+            if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "content-length" { continue }
             upstreamHeaders.add(name: name, value: value)
         }
         if !target.isPassthrough {
@@ -222,7 +240,15 @@ enum ProxyForwarder {
         // Replace model field using ORIGINAL body.
         var bodyData = originalBodyData
         if let targetModel = target.targetModel {
-            bodyData = Self.replaceModelField(in: bodyData, with: targetModel)
+            let replacement = Self.replaceModelField(in: bodyData, with: targetModel)
+            bodyData = replacement.data
+            let delta = replacement.newLength - replacement.originalLength
+            AppLog.proxy.debug(
+                "[Proxy] [\(requestID)] Model replace target=\(targetModel) replaced=\(replacement.replaced) body=\(replacement.originalLength)→\(replacement.newLength)B delta=\(delta)B"
+            )
+            if !replacement.replaced {
+                AppLog.proxy.warning("[Proxy] [\(requestID)] Model field not found at top-level; request body forwarded unchanged")
+            }
         }
 
         var upstreamRequest = HTTPClientRequest(url: finalURLString)
@@ -236,26 +262,176 @@ enum ProxyForwarder {
             // is set at the HTTPClient pool level in ProxyServer.start().
             return try await httpClient.execute(upstreamRequest, timeout: .seconds(Int64(target.readTimeoutSeconds)))
         } catch {
-            AppLog.proxy.error("[Proxy] Upstream error for \(target.vendorName): \(error)")
+            AppLog.proxy.error("[Proxy] [\(requestID)] Upstream error for \(target.vendorName): \(error)")
             return nil
         }
     }
 
     // MARK: - Helpers
 
-    /// Replace the "model" field value in raw JSON bytes without full re-serialization.
-    /// Preserves all other bytes exactly (critical for thinking block signature integrity).
-    private static func replaceModelField(in data: Data, with newModel: String) -> Data {
-        guard let bodyString = String(data: data, encoding: .utf8) else { return data }
-        let pattern = #""model"\s*:\s*"[^"]*""#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: bodyString, range: NSRange(bodyString.startIndex..., in: bodyString)),
-              let range = Range(match.range, in: bodyString) else {
-            return data
+    struct ModelReplacementResult {
+        let data: Data
+        let replaced: Bool
+        let originalLength: Int
+        let newLength: Int
+    }
+
+    /// Replace only the top-level `"model"` field value while preserving all other bytes exactly.
+    /// This avoids mutating unrelated payload bytes, including thinking/signature blocks.
+    static func replaceModelField(in data: Data, with newModel: String) -> ModelReplacementResult {
+        let originalLength = data.count
+        let bytes = [UInt8](data)
+        guard let modelValueRange = Self.topLevelModelValueRange(in: bytes) else {
+            return ModelReplacementResult(
+                data: data,
+                replaced: false,
+                originalLength: originalLength,
+                newLength: originalLength
+            )
         }
-        var result = bodyString
-        result.replaceSubrange(range, with: #""model": "\#(newModel)""#)
-        return Data(result.utf8)
+
+        let escapedModelBytes = Self.escapeJSONString(newModel)
+        var result = Data()
+        result.reserveCapacity(originalLength - modelValueRange.count + escapedModelBytes.count)
+        result.append(contentsOf: bytes[0..<modelValueRange.lowerBound])
+        result.append(contentsOf: escapedModelBytes)
+        result.append(contentsOf: bytes[modelValueRange.upperBound..<bytes.count])
+
+        return ModelReplacementResult(
+            data: result,
+            replaced: true,
+            originalLength: originalLength,
+            newLength: result.count
+        )
+    }
+
+    private static func topLevelModelValueRange(in bytes: [UInt8]) -> Range<Int>? {
+        let quote: UInt8 = 34
+        let colon: UInt8 = 58
+        let openObject: UInt8 = 123
+        let closeObject: UInt8 = 125
+        let openArray: UInt8 = 91
+        let closeArray: UInt8 = 93
+        let modelKey = Array("model".utf8)
+
+        var index = 0
+        var depth = 0
+
+        while index < bytes.count {
+            let byte = bytes[index]
+
+            if byte == quote {
+                guard let (stringRange, nextIndex) = Self.parseJSONString(in: bytes, startingAt: index) else {
+                    return nil
+                }
+
+                if depth == 1 {
+                    var cursor = nextIndex
+                    while cursor < bytes.count, Self.isWhitespace(bytes[cursor]) {
+                        cursor += 1
+                    }
+
+                    if cursor < bytes.count, bytes[cursor] == colon, bytes[stringRange].elementsEqual(modelKey) {
+                        cursor += 1
+                        while cursor < bytes.count, Self.isWhitespace(bytes[cursor]) {
+                            cursor += 1
+                        }
+
+                        guard cursor < bytes.count, bytes[cursor] == quote,
+                              let (modelValueRange, _) = Self.parseJSONString(in: bytes, startingAt: cursor) else {
+                            return nil
+                        }
+                        return modelValueRange
+                    }
+                }
+
+                index = nextIndex
+                continue
+            }
+
+            switch byte {
+            case openObject, openArray:
+                depth += 1
+            case closeObject, closeArray:
+                depth = max(0, depth - 1)
+            default:
+                break
+            }
+
+            index += 1
+        }
+
+        return nil
+    }
+
+    private static func parseJSONString(in bytes: [UInt8], startingAt start: Int) -> (Range<Int>, Int)? {
+        let quote: UInt8 = 34
+        let backslash: UInt8 = 92
+        guard start < bytes.count, bytes[start] == quote else { return nil }
+
+        var index = start + 1
+        var escaped = false
+
+        while index < bytes.count {
+            let byte = bytes[index]
+            if escaped {
+                escaped = false
+                index += 1
+                continue
+            }
+
+            if byte == backslash {
+                escaped = true
+                index += 1
+                continue
+            }
+
+            if byte == quote {
+                return ((start + 1)..<index, index + 1)
+            }
+
+            index += 1
+        }
+
+        return nil
+    }
+
+    private static func isWhitespace(_ byte: UInt8) -> Bool {
+        byte == 32 || byte == 9 || byte == 10 || byte == 13
+    }
+
+    private static func escapeJSONString(_ value: String) -> [UInt8] {
+        var escaped = ""
+        escaped.reserveCapacity(value.utf8.count)
+
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 34:
+                escaped += "\\\""
+            case 92:
+                escaped += "\\\\"
+            case 8:
+                escaped += "\\b"
+            case 12:
+                escaped += "\\f"
+            case 10:
+                escaped += "\\n"
+            case 13:
+                escaped += "\\r"
+            case 9:
+                escaped += "\\t"
+            case 0..<32:
+                escaped += String(format: "\\u%04X", scalar.value)
+            default:
+                escaped.unicodeScalars.append(scalar)
+            }
+        }
+
+        return Array(escaped.utf8)
+    }
+
+    private static func containsJSONStringField(_ data: Data, field: String) -> Bool {
+        data.range(of: Data(("\"\(field)\"").utf8)) != nil
     }
 
     private static func extractAPIKey(from headers: HTTPHeaders) -> String {

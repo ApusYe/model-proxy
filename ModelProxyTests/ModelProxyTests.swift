@@ -516,4 +516,45 @@ struct ModelProxyTests {
         #expect(decoded.date == snapshot.date)
         #expect(decoded.usageByVendorAndModel[vendorID.uuidString]?["claude-sonnet-4-6"] == record)
     }
+
+    // MARK: - ProxyForwarder: model replacement safety
+
+    @Test func replaceModelFieldUpdatesTopLevelOnlyAndKeepsFormatting() {
+        let source = #"{"model" : "claude-opus-4-6","messages":[{"role":"user","content":"hi"}]}"#
+        let replaced = ProxyForwarder.replaceModelField(in: Data(source.utf8), with: "qwen-plus")
+
+        #expect(replaced.replaced)
+        #expect(replaced.originalLength == source.utf8.count)
+        #expect(String(data: replaced.data, encoding: .utf8) == #"{"model" : "qwen-plus","messages":[{"role":"user","content":"hi"}]}"#)
+    }
+
+    @Test func replaceModelFieldDoesNotTouchNestedModelMentions() {
+        let source = #"{"messages":[{"role":"user","content":"literal {\"model\":\"nested\"}"}],"model":"claude-sonnet-4-6"}"#
+        let replaced = ProxyForwarder.replaceModelField(in: Data(source.utf8), with: "glm-4")
+        let output = String(data: replaced.data, encoding: .utf8)
+
+        #expect(replaced.replaced)
+        #expect(output?.contains(#"literal {\"model\":\"nested\"}"#) == true)
+        #expect(output == #"{"messages":[{"role":"user","content":"literal {\"model\":\"nested\"}"}],"model":"glm-4"}"#)
+    }
+
+    @Test func replaceModelFieldPreservesThinkingAndSignatureBytes() {
+        let thinkingBlock = #"{"type":"thinking","thinking":"chain-of-thought","signature":"sig_abc123"}"#
+        let source = #"{"model":"claude-sonnet-4-6","messages":[{"role":"assistant","content":[\#(thinkingBlock)]}]}"#
+        let replaced = ProxyForwarder.replaceModelField(in: Data(source.utf8), with: "qwen-plus")
+        let output = String(data: replaced.data, encoding: .utf8)
+
+        #expect(replaced.replaced)
+        #expect(output?.contains(thinkingBlock) == true)
+        #expect(output == #"{"model":"qwen-plus","messages":[{"role":"assistant","content":[\#(thinkingBlock)]}]}"#)
+    }
+
+    @Test func replaceModelFieldReturnsUnchangedWhenModelMissing() {
+        let source = #"{"messages":[{"role":"user","content":"hi"}]}"#
+        let replaced = ProxyForwarder.replaceModelField(in: Data(source.utf8), with: "qwen-plus")
+
+        #expect(replaced.replaced == false)
+        #expect(replaced.data == Data(source.utf8))
+        #expect(replaced.originalLength == replaced.newLength)
+    }
 }

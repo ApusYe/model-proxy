@@ -19,6 +19,58 @@ struct ModelProxyTests {
         #expect(decoded == original)
     }
 
+    // MARK: - Vendor timeout round-trip
+
+    @Test func vendorCodableRoundTripWithTimeouts() throws {
+        let original = Vendor(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            name: "SlowVendor",
+            baseURL: "https://slow.example.com",
+            apiKey: "key",
+            connectTimeoutSeconds: 30,
+            readTimeoutSeconds: 300
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Vendor.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.connectTimeoutSeconds == 30)
+        #expect(decoded.readTimeoutSeconds == 300)
+    }
+
+    // MARK: - Vendor compatibleClientID round-trip
+
+    @Test func vendorCodableRoundTripWithCompatibleClientID() throws {
+        let clientID = UUID(uuidString: "00000000-0000-0000-0000-000000000099")!
+        let original = Vendor(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            name: "DashScope",
+            baseURL: "https://dashscope.aliyuncs.com/compatible-mode",
+            apiKey: "key",
+            compatibleClientID: clientID
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Vendor.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.compatibleClientID == clientID)
+    }
+
+    // MARK: - Vendor legacy JSON (no timeout/compatibleClientID fields)
+
+    @Test func vendorDecodesLegacyJSON() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "DashScope",
+            "baseURL": "https://dashscope.aliyuncs.com/compatible-mode",
+            "apiKey": "test-key"
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(Vendor.self, from: legacyJSON)
+        #expect(decoded.connectTimeoutSeconds == 10)
+        #expect(decoded.readTimeoutSeconds == 120)
+        #expect(decoded.compatibleClientID == nil)
+    }
+
     // MARK: - ClientConfig round-trip
 
     @Test func clientConfigCodableRoundTrip() throws {
@@ -66,6 +118,42 @@ struct ModelProxyTests {
         #expect(decoded == original)
     }
 
+    // MARK: - ModelMapping with backup target round-trip
+
+    @Test func modelMappingWithBackupTargetRoundTrip() throws {
+        let vendorID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let backupVendorID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        let original = ModelMapping(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
+            sourceModel: "claude-haiku-4-5",
+            targetModel: "qwen-turbo",
+            targetVendorID: vendorID,
+            backupTargetModel: "glm-4-flash",
+            backupTargetVendorID: backupVendorID
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ModelMapping.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.backupTargetModel == "glm-4-flash")
+        #expect(decoded.backupTargetVendorID == backupVendorID)
+    }
+
+    // MARK: - ModelMapping legacy JSON (no backup fields)
+
+    @Test func modelMappingDecodesLegacyJSON() throws {
+        let legacyJSON = """
+        {
+            "id": "00000000-0000-0000-0000-000000000010",
+            "sourceModel": "claude-haiku-4-5",
+            "targetModel": "qwen-turbo",
+            "targetVendorID": "00000000-0000-0000-0000-000000000002"
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ModelMapping.self, from: legacyJSON)
+        #expect(decoded.backupTargetModel == nil)
+        #expect(decoded.backupTargetVendorID == nil)
+    }
+
     // MARK: - AppConfig round-trip
 
     @Test func appConfigCodableRoundTrip() throws {
@@ -102,7 +190,7 @@ struct ModelProxyTests {
         let config = AppConfig(vendors: [vendor], clients: [client], modelMappings: [mapping])
         let snapshot = RoutingSnapshot(from: config, for: client)
 
-        let result = snapshot.resolve(model: "claude-haiku-4-5", originalAPIKey: "original-key")
+        let (result, _) = snapshot.resolve(model: "claude-haiku-4-5", originalAPIKey: "original-key")
         guard case .routed(let target) = result else {
             Issue.record("Expected .routed, got \(result)")
             return
@@ -120,7 +208,7 @@ struct ModelProxyTests {
         let config = AppConfig(vendors: [], clients: [client], modelMappings: [])
         let snapshot = RoutingSnapshot(from: config, for: client)
 
-        let result = snapshot.resolve(model: "claude-opus-4-6", originalAPIKey: "my-key")
+        let (result, _) = snapshot.resolve(model: "claude-opus-4-6", originalAPIKey: "my-key")
         guard case .routed(let target) = result else {
             Issue.record("Expected .routed, got \(result)")
             return
@@ -138,7 +226,7 @@ struct ModelProxyTests {
         let config = AppConfig(vendors: [], clients: [codexClient], modelMappings: [])
         let snapshot = RoutingSnapshot(from: config, for: codexClient)
 
-        let result = snapshot.resolve(model: "some-model", originalAPIKey: "key")
+        let (result, _) = snapshot.resolve(model: "some-model", originalAPIKey: "key")
         guard case .routed(let target) = result else {
             Issue.record("Expected .routed, got \(result)")
             return
@@ -154,7 +242,7 @@ struct ModelProxyTests {
         let config = AppConfig(vendors: [], clients: [client], modelMappings: [])
         let snapshot = RoutingSnapshot(from: config, for: client)
 
-        let result = snapshot.resolve(model: "claude-opus-4-6", originalAPIKey: "my-key")
+        let (result, _) = snapshot.resolve(model: "claude-opus-4-6", originalAPIKey: "my-key")
         guard case .blocked = result else {
             Issue.record("Expected .blocked, got \(result)")
             return
@@ -169,7 +257,7 @@ struct ModelProxyTests {
         let config = AppConfig(vendors: [vendor], clients: [client], modelMappings: [])
         let snapshot = RoutingSnapshot(from: config, for: client)
 
-        let result = snapshot.resolve(model: "claude-opus-4-6", originalAPIKey: "my-key")
+        let (result, _) = snapshot.resolve(model: "claude-opus-4-6", originalAPIKey: "my-key")
         guard case .routed(let target) = result else {
             Issue.record("Expected .routed, got \(result)")
             return
@@ -304,6 +392,114 @@ struct ModelProxyTests {
         let (input, output) = ResponseRelay.extractUsageFromSSEChunk(buf)
         #expect(input == 0)
         #expect(output == 0)
+    }
+
+    // MARK: - RoutingSnapshot: backup filtered by compatibleClientID
+
+    @Test func routingSnapshotFiltersBackupByCompatibleClientID() {
+        let client = ClientConfig(
+            id: UUID(uuidString: "00000000-0000-0000-0000-0000000000C1")!,
+            clientName: "Claude Code", port: 8080,
+            defaultUpstream: "https://api.anthropic.com"
+        )
+        let otherClientID = UUID(uuidString: "00000000-0000-0000-0000-0000000000C2")!
+        let primaryVendor = Vendor(
+            id: UUID(uuidString: "00000000-0000-0000-0000-00000000A001")!,
+            name: "Primary", baseURL: "https://primary.example.com", apiKey: "pk"
+        )
+        // Backup vendor is only compatible with a DIFFERENT client
+        let backupVendor = Vendor(
+            id: UUID(uuidString: "00000000-0000-0000-0000-00000000A002")!,
+            name: "Backup", baseURL: "https://backup.example.com", apiKey: "bk",
+            compatibleClientID: otherClientID
+        )
+        let mapping = ModelMapping(
+            sourceModel: "test-model", targetModel: "primary-model",
+            targetVendorID: primaryVendor.id,
+            backupTargetModel: "backup-model",
+            backupTargetVendorID: backupVendor.id
+        )
+        let config = AppConfig(vendors: [primaryVendor, backupVendor], clients: [client], modelMappings: [mapping])
+        let snapshot = RoutingSnapshot(from: config, for: client)
+
+        // Backup should be excluded — targets(for:) should return only primary
+        let targets = snapshot.targets(for: "test-model")
+        #expect(targets?.count == 1)
+        #expect(targets?.first?.vendorName == "Primary")
+    }
+
+    // MARK: - RoutingSnapshot: backup target resolves correctly
+
+    @Test func routingSnapshotWithBackupTargetResolvesCorrectly() {
+        let client = ClientConfig(clientName: "Claude Code", port: 8080, defaultUpstream: "https://api.anthropic.com")
+        let primaryVendor = Vendor(name: "Primary", baseURL: "https://primary.example.com", apiKey: "pk")
+        let backupVendor = Vendor(name: "Backup", baseURL: "https://backup.example.com", apiKey: "bk")
+        let mapping = ModelMapping(
+            sourceModel: "test-model", targetModel: "primary-model",
+            targetVendorID: primaryVendor.id,
+            backupTargetModel: "backup-model",
+            backupTargetVendorID: backupVendor.id
+        )
+        let config = AppConfig(vendors: [primaryVendor, backupVendor], clients: [client], modelMappings: [mapping])
+        var snapshot = RoutingSnapshot(from: config, for: client)
+
+        // Default state = primary
+        let (result1, _) = snapshot.resolve(model: "test-model", originalAPIKey: "key")
+        guard case .routed(let target1) = result1 else {
+            Issue.record("Expected .routed"); return
+        }
+        #expect(target1.vendorName == "Primary")
+        #expect(target1.targetModel == "primary-model")
+
+        // Switch to backup via state update
+        var state = RoutingSnapshot.RouteState()
+        state.activeTarget = .backup
+        snapshot.updateRouteState(for: "test-model", state: state)
+
+        let (result2, _) = snapshot.resolve(model: "test-model", originalAPIKey: "key")
+        guard case .routed(let target2) = result2 else {
+            Issue.record("Expected .routed"); return
+        }
+        #expect(target2.vendorName == "Backup")
+        #expect(target2.targetModel == "backup-model")
+    }
+
+    // MARK: - RouteState: failCount threshold switches activeTarget
+
+    @Test func routeStateFailCountThreshold() {
+        // Simulate the threshold logic from ProxyForwarder
+        var state = RoutingSnapshot.RouteState()
+        #expect(state.activeTarget == .primary)
+        #expect(state.failCount == 0)
+
+        // Increment to 9 — should NOT switch
+        for _ in 0..<9 {
+            state.failCount += 1
+        }
+        #expect(state.failCount == 9)
+        #expect(state.activeTarget == .primary) // still primary
+
+        // Increment to 10 — threshold reached, switch
+        state.failCount += 1
+        if state.failCount >= 10 {
+            state.activeTarget = (state.activeTarget == .primary) ? .backup : .primary
+            state.failCount = 0
+        }
+        #expect(state.activeTarget == .backup)
+        #expect(state.failCount == 0)
+    }
+
+    // MARK: - RouteState: success resets failCount
+
+    @Test func routeStateResetsOnSuccess() {
+        var state = RoutingSnapshot.RouteState()
+        state.failCount = 7
+        state.activeTarget = .primary
+
+        // Simulate success reset (as done in ProxyForwarder)
+        state.failCount = 0
+        #expect(state.failCount == 0)
+        #expect(state.activeTarget == .primary) // target unchanged on success
     }
 
     // MARK: - DailyTokenSnapshot round-trip

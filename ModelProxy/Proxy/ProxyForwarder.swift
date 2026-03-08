@@ -23,8 +23,9 @@ enum ProxyForwarder {
         // 2. Resolve route.
         let resolveResult: RoutingSnapshot.ResolveResult
         let model: String
+        var routeState: RoutingSnapshot.RouteState
         do {
-            (resolveResult, model) = try await router.resolve(bodyBytes: body, originalAPIKey: originalAPIKey)
+            (resolveResult, model, routeState) = try await router.resolve(bodyBytes: body, originalAPIKey: originalAPIKey)
         } catch {
             await Self.sendError(channel: channel, status: .badRequest, message: "Bad request: \(error)")
             return
@@ -46,76 +47,52 @@ enum ProxyForwarder {
         let routeType = target.isPassthrough ? "passthrough" : "mapped → \(target.vendorName)"
         AppLog.proxy.info("[Proxy] \(head.method.rawValue) \(head.uri) model=\(model) \(routeType) → \(target.baseURL)")
 
-        // 3. Build upstream URL.
-        let finalURLString = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/"))
-            + head.uri
+        // 3. Preserve original body BEFORE model field replacement (needed for failover retry).
+        let originalBodyData = body.getData(at: body.readerIndex, length: body.readableBytes) ?? Data()
 
-        guard let _ = URL(string: finalURLString) else {
-            await Self.sendError(channel: channel, status: .badRequest, message: "Invalid upstream URL: \(finalURLString)")
-            return
-        }
+        // 4. Build and send upstream request.
+        let (upstreamResponse, usedTarget) = await Self.executeWithFailover(
+            head: head,
+            originalBodyData: originalBodyData,
+            primaryTarget: target,
+            model: model,
+            router: router,
+            httpClient: httpClient,
+            routeState: &routeState
+        )
 
-        // 4. Build upstream request headers.
-        var upstreamHeaders = HTTPHeaders()
-        for (name, value) in head.headers {
-            let lower = name.lowercased()
-            if lower == "host" || lower == "connection" || lower == "transfer-encoding" { continue }
-            upstreamHeaders.add(name: name, value: value)
-        }
+        // 5. Write back mutated route state.
+        await router.updateRouteState(model: model, state: routeState)
 
-        if !target.isPassthrough {
-            upstreamHeaders.remove(name: "authorization")
-            upstreamHeaders.remove(name: "x-api-key")
-            upstreamHeaders.add(name: "Authorization", value: "Bearer \(target.apiKey)")
-            upstreamHeaders.add(name: "x-api-key", value: target.apiKey)
-        }
-
-        if let host = URL(string: target.baseURL)?.host {
-            upstreamHeaders.remove(name: "host")
-            upstreamHeaders.add(name: "Host", value: host)
-        }
-
-        // 5. Prepare request body — replace model field value without re-serializing.
-        //    Full JSONSerialization round-trip corrupts thinking block signatures.
-        var bodyData = body.getData(at: body.readerIndex, length: body.readableBytes) ?? Data()
-
-        if let targetModel = target.targetModel {
-            bodyData = Self.replaceModelField(in: bodyData, with: targetModel)
-        }
-
-        // 6. Send upstream request via AsyncHTTPClient.
-        var upstreamRequest = HTTPClientRequest(url: finalURLString)
-        upstreamRequest.method = head.method
-        upstreamRequest.headers = upstreamHeaders
-        upstreamRequest.body = .bytes(bodyData)
-
-        let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
-            ? .passthrough
-            : .mapped(targetModel: target.targetModel ?? model)
-
-        let startTime = Date.now
-
-        let upstreamResponse: HTTPClientResponse
-        do {
-            upstreamResponse = try await httpClient.execute(upstreamRequest, timeout: .seconds(120))
-        } catch {
-            let duration = Date.now.timeIntervalSince(startTime)
+        guard let upstreamResponse, let usedTarget else {
+            // executeWithFailover already sent error to channel on total failure.
+            let duration = Date.now.timeIntervalSince(Date.now)
+            let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
+                ? .passthrough
+                : .mapped(targetModel: target.targetModel ?? model)
             let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: 502, duration: duration)
             await MainActor.run { trafficLog.append(entry) }
-            await Self.sendError(channel: channel, status: .badGateway, message: "Upstream unreachable: \(error)")
+            await Self.sendError(channel: channel, status: .badGateway, message: "Upstream unreachable")
             return
         }
 
-        // 7. Build usage callback (only for mapped/fallback routes with a known vendor UUID).
-        // Stats key by target model (vendor-facing name), falling back to source model if no mapping.
-        let statsModel = target.targetModel ?? model
-        let onUsage: ResponseRelay.UsageCallback? = target.vendorID.map { vendorID in
+        // 6. Build usage callback for the vendor that actually served the request.
+        let statsModel = usedTarget.targetModel ?? model
+        let entryRouteType: TrafficEntry.RouteType = usedTarget.isPassthrough
+            ? .passthrough
+            : .mapped(targetModel: usedTarget.targetModel ?? model)
+
+        let onUsage: ResponseRelay.UsageCallback? = usedTarget.vendorID.map { vendorID in
             { [tokenStatsStore] input, output in
                 Task { @MainActor in
                     tokenStatsStore.add(vendorID: vendorID, model: statsModel, input: input, output: output)
                 }
             }
         }
+
+        // 7. Log status with readable text.
+        let statusCode = Int(upstreamResponse.status.code)
+        AppLog.proxy.debug("[Proxy] Response: \(statusCode) \(HTTPStatusText.text(for: statusCode)) model=\(model) vendor=\(usedTarget.vendorName)")
 
         // 8. Relay response.
         await ResponseRelay.relay(
@@ -125,10 +102,143 @@ enum ProxyForwarder {
         )
 
         // 9. Publish traffic event with actual upstream status code.
-        let statusCode = Int(upstreamResponse.status.code)
+        let startTime = Date.now
         let duration = Date.now.timeIntervalSince(startTime)
         let entry = TrafficEntry(model: model, routeType: entryRouteType, httpStatus: statusCode, duration: duration)
         await MainActor.run { trafficLog.append(entry) }
+    }
+
+    // MARK: - Failover logic
+
+    /// Execute upstream request with optional 429 failover to backup target.
+    /// Returns the response and the target that was actually used, or (nil, nil) on total failure.
+    private static func executeWithFailover(
+        head: HTTPRequestHead,
+        originalBodyData: Data,
+        primaryTarget: RoutingSnapshot.RouteTarget,
+        model: String,
+        router: RequestRouter,
+        httpClient: HTTPClient,
+        routeState: inout RoutingSnapshot.RouteState
+    ) async -> (HTTPClientResponse?, RoutingSnapshot.RouteTarget?) {
+
+        // Try with primary (or current active) target.
+        let primaryResponse = await Self.executeUpstream(
+            head: head,
+            originalBodyData: originalBodyData,
+            target: primaryTarget,
+            httpClient: httpClient
+        )
+
+        guard let primaryResponse else {
+            // Network-level failure (unreachable).
+            routeState.failCount += 1
+            if routeState.failCount >= 10 {
+                routeState.activeTarget = (routeState.activeTarget == .primary) ? .backup : .primary
+                routeState.failCount = 0
+            }
+            return (nil, nil)
+        }
+
+        let statusCode = Int(primaryResponse.status.code)
+
+        // Success: reset failCount.
+        if statusCode < 400 {
+            routeState.failCount = 0
+            return (primaryResponse, primaryTarget)
+        }
+
+        // 429 on mapped route: try failover to backup.
+        if statusCode == 429 && !primaryTarget.isPassthrough {
+            routeState.failCount += 1
+            if routeState.failCount >= 10 {
+                routeState.activeTarget = (routeState.activeTarget == .primary) ? .backup : .primary
+                routeState.failCount = 0
+            }
+
+            // Get backup targets from router.
+            if let allTargets = await router.targets(for: model), allTargets.count > 1 {
+                let backupTarget = (primaryTarget.vendorID == allTargets[0].vendorID) ? allTargets[1] : allTargets[0]
+                AppLog.proxy.info("[Proxy] Rate limited on \(primaryTarget.vendorName), failing over to \(backupTarget.vendorName)")
+
+                let backupResponse = await Self.executeUpstream(
+                    head: head,
+                    originalBodyData: originalBodyData,
+                    target: backupTarget,
+                    httpClient: httpClient
+                )
+                if let backupResponse {
+                    if Int(backupResponse.status.code) < 400 {
+                        routeState.failCount = 0
+                    }
+                    return (backupResponse, backupTarget)
+                }
+            }
+
+            // No backup or backup also failed: return original 429.
+            return (primaryResponse, primaryTarget)
+        }
+
+        // Non-429 error: forward as-is, increment failCount.
+        if statusCode >= 400 {
+            routeState.failCount += 1
+            if routeState.failCount >= 10 {
+                routeState.activeTarget = (routeState.activeTarget == .primary) ? .backup : .primary
+                routeState.failCount = 0
+            }
+        }
+
+        return (primaryResponse, primaryTarget)
+    }
+
+    /// Build and execute a single upstream request for a given target.
+    private static func executeUpstream(
+        head: HTTPRequestHead,
+        originalBodyData: Data,
+        target: RoutingSnapshot.RouteTarget,
+        httpClient: HTTPClient
+    ) async -> HTTPClientResponse? {
+        let finalURLString = target.baseURL.trimmingCharacters(in: .init(charactersIn: "/")) + head.uri
+        guard URL(string: finalURLString) != nil else { return nil }
+
+        // Build headers.
+        var upstreamHeaders = HTTPHeaders()
+        for (name, value) in head.headers {
+            let lower = name.lowercased()
+            if lower == "host" || lower == "connection" || lower == "transfer-encoding" { continue }
+            upstreamHeaders.add(name: name, value: value)
+        }
+        if !target.isPassthrough {
+            upstreamHeaders.remove(name: "authorization")
+            upstreamHeaders.remove(name: "x-api-key")
+            upstreamHeaders.add(name: "Authorization", value: "Bearer \(target.apiKey)")
+            upstreamHeaders.add(name: "x-api-key", value: target.apiKey)
+        }
+        if let host = URL(string: target.baseURL)?.host {
+            upstreamHeaders.remove(name: "host")
+            upstreamHeaders.add(name: "Host", value: host)
+        }
+
+        // Replace model field using ORIGINAL body.
+        var bodyData = originalBodyData
+        if let targetModel = target.targetModel {
+            bodyData = Self.replaceModelField(in: bodyData, with: targetModel)
+        }
+
+        var upstreamRequest = HTTPClientRequest(url: finalURLString)
+        upstreamRequest.method = head.method
+        upstreamRequest.headers = upstreamHeaders
+        upstreamRequest.body = .bytes(bodyData)
+
+        do {
+            // Note: readTimeoutSeconds is used as the overall request deadline (connect + transfer).
+            // AsyncHTTPClient doesn't support per-request connect timeout; connectTimeoutSeconds
+            // is set at the HTTPClient pool level in ProxyServer.start().
+            return try await httpClient.execute(upstreamRequest, timeout: .seconds(Int64(target.readTimeoutSeconds)))
+        } catch {
+            AppLog.proxy.error("[Proxy] Upstream error for \(target.vendorName): \(error)")
+            return nil
+        }
     }
 
     // MARK: - Helpers

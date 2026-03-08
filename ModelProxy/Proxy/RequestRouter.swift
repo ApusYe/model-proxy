@@ -3,7 +3,7 @@ import NIOCore
 import NIOFoundationCompat
 
 /// Thread-safe routing resolver.
-/// Holds an atomic snapshot of routing config; swapped on config change (Phase 3).
+/// Holds an atomic snapshot of routing config; swapped on config change.
 actor RequestRouter {
 
     private var snapshot: RoutingSnapshot
@@ -18,13 +18,10 @@ actor RequestRouter {
     }
 
     /// Parse raw HTTP body bytes, extract the `model` field, and return a resolved target.
-    /// - Parameter bodyBytes: accumulated request body buffer.
-    /// - Parameter originalAPIKey: Authorization value from the incoming request.
-    /// - Returns: RouteTarget with resolved base URL and API key, plus extracted model string.
     func resolve(
         bodyBytes: ByteBuffer,
         originalAPIKey: String
-    ) throws -> (result: RoutingSnapshot.ResolveResult, model: String) {
+    ) throws -> (result: RoutingSnapshot.ResolveResult, model: String, state: RoutingSnapshot.RouteState) {
         guard let data = bodyBytes.getData(at: bodyBytes.readerIndex, length: bodyBytes.readableBytes) else {
             throw RouterError.unreadableBody
         }
@@ -32,8 +29,18 @@ actor RequestRouter {
               let model = json["model"] as? String, !model.isEmpty else {
             throw RouterError.missingModelField
         }
-        let result = snapshot.resolve(model: model, originalAPIKey: originalAPIKey)
-        return (result, model)
+        let (result, state) = snapshot.resolve(model: model, originalAPIKey: originalAPIKey)
+        return (result, model, state)
+    }
+
+    /// Returns all targets for a mapped model (for failover).
+    func targets(for model: String) -> [RoutingSnapshot.RouteTarget]? {
+        snapshot.targets(for: model)
+    }
+
+    /// Write back mutated failover state from ProxyForwarder.
+    func updateRouteState(model: String, state: RoutingSnapshot.RouteState) {
+        snapshot.updateRouteState(for: model, state: state)
     }
 }
 

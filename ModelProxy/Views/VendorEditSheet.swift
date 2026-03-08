@@ -13,6 +13,9 @@ struct VendorEditSheet: View {
     @State private var baseURL: String = ""
     @State private var apiKey: String = ""
     @State private var showAPIKey: Bool = false
+    @State private var connectTimeoutSeconds: Int = 10
+    @State private var readTimeoutSeconds: Int = 120
+    @State private var compatibleClientID: UUID?
 
     private var isEditing: Bool { editingVendorID != nil }
     private var title: String { isEditing ? "Edit Vendor" : "Add Vendor" }
@@ -38,6 +41,18 @@ struct VendorEditSheet: View {
                         .buttonStyle(.mpInline)
                         .accessibilityLabel(showAPIKey ? "Hide API Key" : "Reveal API Key")
                     }
+
+                    Picker("Compatible Client", selection: $compatibleClientID) {
+                        Text("All Clients").tag(UUID?.none)
+                        ForEach(configStore.config.clients) { client in
+                            Text(client.clientName).tag(UUID?.some(client.id))
+                        }
+                    }
+                }
+
+                Section("Timeouts (seconds)") {
+                    Stepper("Connect: \(connectTimeoutSeconds)s", value: $connectTimeoutSeconds, in: 1...120)
+                    Stepper("Read: \(readTimeoutSeconds)s", value: $readTimeoutSeconds, in: 10...600)
                 }
             }
             .formStyle(.grouped)
@@ -72,6 +87,9 @@ struct VendorEditSheet: View {
                 name = vendor.name
                 baseURL = vendor.baseURL
                 apiKey = vendor.apiKey
+                connectTimeoutSeconds = vendor.connectTimeoutSeconds
+                readTimeoutSeconds = vendor.readTimeoutSeconds
+                compatibleClientID = vendor.compatibleClientID
             }
         }
     }
@@ -82,8 +100,18 @@ struct VendorEditSheet: View {
             configStore.config.vendors[idx].name = name
             configStore.config.vendors[idx].baseURL = baseURL
             configStore.config.vendors[idx].apiKey = apiKey
+            configStore.config.vendors[idx].connectTimeoutSeconds = connectTimeoutSeconds
+            configStore.config.vendors[idx].readTimeoutSeconds = readTimeoutSeconds
+            configStore.config.vendors[idx].compatibleClientID = compatibleClientID
         } else {
-            let v = Vendor(name: name, baseURL: baseURL, apiKey: apiKey)
+            let v = Vendor(
+                name: name,
+                baseURL: baseURL,
+                apiKey: apiKey,
+                connectTimeoutSeconds: connectTimeoutSeconds,
+                readTimeoutSeconds: readTimeoutSeconds,
+                compatibleClientID: compatibleClientID
+            )
             configStore.config.vendors.append(v)
         }
         configStore.saveAndReload(proxyServer: proxyServer)

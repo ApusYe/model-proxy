@@ -65,6 +65,9 @@ private struct MappingRow: View {
     @State private var editSourceModel = ""
     @State private var editTargetModel = ""
     @State private var editVendorID: UUID?
+    @State private var editBackupTargetModel = ""
+    @State private var editBackupVendorID: UUID?
+    @State private var showBackupFields = false
     @State private var menuWidth: CGFloat = 0
 
     private var vendorName: String {
@@ -87,6 +90,40 @@ private struct MappingRow: View {
                         Text(vendor.name).tag(UUID?.some(vendor.id))
                     }
                 }
+
+                if showBackupFields {
+                    Divider()
+                    Text("Backup Target")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        TextField("Backup model (vendor model name)", text: $editBackupTargetModel)
+                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
+                        Color.clear.frame(width: menuWidth, height: 1)
+                    }
+                    Picker("Backup vendor", selection: $editBackupVendorID) {
+                        Text("Select...").tag(UUID?.none)
+                        ForEach(configStore.config.vendors) { vendor in
+                            Text(vendorPickerLabel(vendor: vendor, clients: configStore.config.clients))
+                                .tag(UUID?.some(vendor.id))
+                        }
+                    }
+                    Button("Remove Backup") {
+                        showBackupFields = false
+                        editBackupTargetModel = ""
+                        editBackupVendorID = nil
+                    }
+                    .buttonStyle(.mpDestructive)
+                    .controlSize(.small)
+                } else {
+                    Button("Add Backup Target") {
+                        showBackupFields = true
+                    }
+                    .buttonStyle(.mpInline)
+                    .controlSize(.small)
+                }
+
                 HStack {
                     Spacer()
                     Button("Cancel") { isEditing = false }
@@ -100,6 +137,15 @@ private struct MappingRow: View {
                         configStore.config.modelMappings[index].sourceModel = trimmedSource
                         configStore.config.modelMappings[index].targetModel = editTargetModel.trimmingCharacters(in: .whitespaces)
                         configStore.config.modelMappings[index].targetVendorID = vendorID
+                        if showBackupFields,
+                           !editBackupTargetModel.trimmingCharacters(in: .whitespaces).isEmpty,
+                           let backupVendorID = editBackupVendorID {
+                            configStore.config.modelMappings[index].backupTargetModel = editBackupTargetModel.trimmingCharacters(in: .whitespaces)
+                            configStore.config.modelMappings[index].backupTargetVendorID = backupVendorID
+                        } else {
+                            configStore.config.modelMappings[index].backupTargetModel = nil
+                            configStore.config.modelMappings[index].backupTargetVendorID = nil
+                        }
                         configStore.saveAndReload(proxyServer: proxyServer)
                         isEditing = false
                     }
@@ -107,7 +153,8 @@ private struct MappingRow: View {
                     .disabled(
                         editSourceModel.trimmingCharacters(in: .whitespaces).isEmpty ||
                         editTargetModel.trimmingCharacters(in: .whitespaces).isEmpty ||
-                        editVendorID == nil
+                        editVendorID == nil ||
+                        (showBackupFields && (editBackupTargetModel.trimmingCharacters(in: .whitespaces).isEmpty || editBackupVendorID == nil))
                     )
                 }
             }
@@ -121,15 +168,44 @@ private struct MappingRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(mapping.targetModel)
                         .font(.system(.body, design: .monospaced))
-                    Text(vendorName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text(vendorName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if mapping.backupTargetVendorID != nil {
+                            Text("Primary")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(.blue, in: Capsule())
+                        }
+                    }
+                    if let backupVendorID = mapping.backupTargetVendorID {
+                        HStack(spacing: 4) {
+                            Text(mapping.backupTargetModel ?? mapping.targetModel)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Text(configStore.config.vendors.first(where: { $0.id == backupVendorID })?.name ?? "Unknown")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Backup")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(.gray, in: Capsule())
+                        }
+                    }
                 }
                 Spacer()
                 Button("Edit") {
                     editSourceModel = mapping.sourceModel
                     editTargetModel = mapping.targetModel
                     editVendorID = mapping.targetVendorID
+                    editBackupTargetModel = mapping.backupTargetModel ?? ""
+                    editBackupVendorID = mapping.backupTargetVendorID
+                    showBackupFields = mapping.backupTargetVendorID != nil
                     isEditing = true
                 }
                 .buttonStyle(.mpInline)
@@ -165,6 +241,9 @@ private struct AddMappingRow: View {
     @State private var selectedSourceModel: String = ""
     @State private var targetModel: String = ""
     @State private var selectedVendorID: UUID? = nil
+    @State private var backupTargetModel: String = ""
+    @State private var backupTargetVendorID: UUID? = nil
+    @State private var showBackupFields: Bool = false
     @State private var menuWidth: CGFloat = 0
 
     var body: some View {
@@ -182,6 +261,40 @@ private struct AddMappingRow: View {
                     Text(vendor.name).tag(UUID?.some(vendor.id))
                 }
             }
+
+            if showBackupFields {
+                Divider()
+                Text("Backup Target")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    TextField("Backup model (vendor model name)", text: $backupTargetModel)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                    Color.clear.frame(width: menuWidth, height: 1)
+                }
+                Picker("Backup vendor", selection: $backupTargetVendorID) {
+                    Text("Select...").tag(UUID?.none)
+                    ForEach(configStore.config.vendors) { vendor in
+                        Text(vendorPickerLabel(vendor: vendor, clients: configStore.config.clients))
+                            .tag(UUID?.some(vendor.id))
+                    }
+                }
+                Button("Remove Backup") {
+                    showBackupFields = false
+                    backupTargetModel = ""
+                    backupTargetVendorID = nil
+                }
+                .buttonStyle(.mpDestructive)
+                .controlSize(.small)
+            } else {
+                Button("Add Backup Target") {
+                    showBackupFields = true
+                }
+                .buttonStyle(.mpInline)
+                .controlSize(.small)
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
@@ -192,10 +305,20 @@ private struct AddMappingRow: View {
                     guard !trimmedSource.isEmpty,
                           !targetModel.trimmingCharacters(in: .whitespaces).isEmpty,
                           let vendorID = selectedVendorID else { return }
+                    var backupModel: String? = nil
+                    var backupVendor: UUID? = nil
+                    if showBackupFields,
+                       !backupTargetModel.trimmingCharacters(in: .whitespaces).isEmpty,
+                       let bvID = backupTargetVendorID {
+                        backupModel = backupTargetModel.trimmingCharacters(in: .whitespaces)
+                        backupVendor = bvID
+                    }
                     let mapping = ModelMapping(
                         sourceModel: trimmedSource,
                         targetModel: targetModel.trimmingCharacters(in: .whitespaces),
-                        targetVendorID: vendorID
+                        targetVendorID: vendorID,
+                        backupTargetModel: backupModel,
+                        backupTargetVendorID: backupVendor
                     )
                     onAdd(mapping)
                 }
@@ -203,7 +326,8 @@ private struct AddMappingRow: View {
                 .disabled(
                     selectedSourceModel.trimmingCharacters(in: .whitespaces).isEmpty ||
                     targetModel.trimmingCharacters(in: .whitespaces).isEmpty ||
-                    selectedVendorID == nil
+                    selectedVendorID == nil ||
+                    (showBackupFields && (backupTargetModel.trimmingCharacters(in: .whitespaces).isEmpty || backupTargetVendorID == nil))
                 )
                 .accessibilityLabel("Add Routing Rule")
             }
@@ -248,6 +372,15 @@ private struct SourceModelField: View {
             .accessibilityLabel("Preset models")
         }
     }
+}
+
+/// Vendor picker label annotated with compatible client name (if restricted).
+private func vendorPickerLabel(vendor: Vendor, clients: [ClientConfig]) -> String {
+    guard let clientID = vendor.compatibleClientID,
+          let client = clients.first(where: { $0.id == clientID }) else {
+        return vendor.name
+    }
+    return "\(vendor.name) (\(client.clientName) only)"
 }
 
 private struct MenuButtonWidthKey: PreferenceKey {

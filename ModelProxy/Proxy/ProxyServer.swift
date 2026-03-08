@@ -56,7 +56,7 @@ final class ProxyServer {
 
         let clientConfig = HTTPClient.Configuration(
             redirectConfiguration: .disallow,
-            timeout: .init(connect: .seconds(10), read: .seconds(120))
+            timeout: .init(connect: .seconds(10))
         )
         let client = HTTPClient(eventLoopGroupProvider: .shared(group), configuration: clientConfig)
         self.httpClient = client

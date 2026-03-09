@@ -1,135 +1,216 @@
 # ModelProxy
 
-> **macOS menu bar app · Transparent local API proxy for multi-vendor model routing**
-
-Route AI model requests from Claude Code and Codex to different providers based on model ID.
+> macOS menu bar app for routing Claude Code and Codex requests to different upstream model vendors.
 
 ![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift)
 ![macOS](https://img.shields.io/badge/macOS-14.0+-86909B?logo=apple)
 ![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-007AFF)
 
-## What it does
+## What It Is
 
-ModelProxy sits between your AI coding tools (Claude Code, Codex) and AI model providers. It intercepts API requests and routes them to the right vendor—Anthropic for Opus/Sonnet, DashScope for Qwen, GLM for others—all configured by model ID matching.
+ModelProxy runs local HTTP listeners on `127.0.0.1` and forwards each request to the right upstream based on the request's `model` field.
 
-## Why use it
+The current app ships with two default client listeners:
+
+- `Claude Code` on port `8080`
+- `Codex` on port `8081`
+
+Each client can have its own:
+
+- local proxy port
+- default passthrough upstream
+- policy for unmapped models
+
+Global routing rules then map source model IDs such as `claude-haiku-4-5` to vendor-specific target models.
+
+## Why Use It
 
 | Benefit | Description |
 |---------|-------------|
-| **Cost optimization** | Route low-tier tasks to cheaper models (haiku → qwen/glm), keep high-tier tasks on Anthropic |
-| **Zero modification** | No changes to Claude Code or Codex—just set environment variables and start the proxy |
-| **Full visibility** | Menu bar status, live traffic log, token usage stats across all vendors |
-| **Hot-reload config** | Change routing rules without restarting the proxy |
+| Cost optimization | Route lower-priority models to cheaper vendors while keeping premium models on their default upstreams. |
+| Zero modification | Point Claude Code or Codex at localhost; no app-side plugin or fork is required. |
+| Full visibility | See listener status, recent traffic, and daily token usage from the menu bar app. |
+| Hot-reload config | Saving settings updates routing snapshots for running listeners without restarting the whole app. |
 
-## Screenshot
+## Current Feature Set
 
-*Coming soon*
+### Proxy and routing
+
+- one SwiftNIO listener per configured client
+- exact-match routing plus longest-prefix routing
+- per-client unmapped model policy:
+  - passthrough to the client's default upstream
+  - route all unmapped models to a chosen vendor
+  - block unmapped models with HTTP 403
+- optional backup target per routing rule for failover
+- API key replacement for routed requests
+- top-level `model` field replacement without rewriting the rest of the JSON body
+- streaming response relay
+
+### Desktop app
+
+- menu bar popover with:
+  - running state
+  - bound ports
+  - today's token summary
+  - recent traffic
+  - start, stop, settings, and quit controls
+- settings tabs:
+  - `General`
+  - `Clients`
+  - `Vendors`
+  - `Routing`
+  - `Statistics`
+  - `Debug`
+- launch at login
+- copyable quick-start shell command for each client
+
+### Observability
+
+- in-memory traffic log
+- daily token usage persistence
+- optional file-based debug logging with retention and compression
+- corrupt config reset detection on app launch
+
+## How It Works
+
+```text
+Claude Code / Codex
+        |
+        | HTTP -> 127.0.0.1:<client-port>
+        v
+   ModelProxy listener
+        |
+        | read JSON body -> extract model
+        v
+   RequestRouter
+        |
+        +--> mapped model ----------> vendor base URL + vendor API key
+        |
+        +--> unmapped passthrough --> client default upstream + original API key
+        |
+        +--> unmapped block -------> HTTP 403
+```
+
+For mapped requests, ModelProxy forwards the original request path to the chosen vendor base URL, swaps credentials, optionally swaps the model name, and relays the response back to the client.
 
 ## Quick Start
 
-### 1. Build
+### 1. Build and run
 
 ```bash
-# Clone the repository
 git clone git@github.com:n0rvyn/model-proxy.git
 cd model-proxy
-
-# Open in Xcode
 open ModelProxy.xcodeproj
-
-# Build and run (⌘R)
 ```
 
-### 2. Configure
+Run the `ModelProxy` scheme in Xcode.
 
-The app lives in your menu bar. Click the icon to:
-- Start/stop the proxy server
-- Configure vendors (endpoints + API keys)
-- Set up model routing rules
-- View traffic and token stats
+### 2. Configure clients and vendors
 
-### 3. Point your tools to the proxy
+After launch, open the menu bar app and configure:
+
+- client ports and default upstreams in `Clients`
+- vendor base URLs, API keys, compatible client, timeouts, and supported model lists in `Vendors`
+- source-model to target-model rules in `Routing`
+
+### 3. Point tools at the local listeners
+
+Example for the default ports:
 
 ```bash
-# Claude Code / Codex
-export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
 ```
 
-Now requests to `claude-opus-4-6` go to Anthropic, `qwen-plus` goes to DashScope, etc.
+For Codex installations that need a different local endpoint, use the command shown in the `Clients` tab for that client.
 
-## Features
+## Configuration Model
 
-### Core
+ModelProxy persists config to:
 
-- **Local HTTP proxy server** - Built on SwiftNIO for async, non-blocking I/O
-- **Model-based routing** - Exact match and prefix match for flexible routing
-- **Multi-vendor support** - Anthropic, DashScope (Qwen), GLM, and more
-- **SSE streaming** - Full passthrough for streaming responses
-
-### Monitoring
-
-- **Traffic log** - See every request: model, route target, status, duration
-- **Token statistics** - Aggregated usage by model and vendor
-- **Real-time status** - Menu bar icon shows proxy state
-
-### Quality of life
-
-- **Launch at login** - Auto-start via SMAppService
-- **One-click env export** - Copy shell export commands for current config
-- **Hot-reload configuration** - Changes take effect immediately
-
-## Architecture
-
-```
-┌─────────────────┐     ┌─────────────────────┐     ┌──────────────────┐
-│  Claude Code    │     │   ModelProxy        │     │  AI Providers    │
-│  Codex          │────▶│  - ProxyServer      │────▶│  - Anthropic     │
-│  (localhost)    │     │  - RequestRouter    │     │  - DashScope     │
-└─────────────────┘     │  - ResponseRelay    │     │  - GLM           │
-                        └─────────────────────┘     └──────────────────┘
+```text
+~/Library/Application Support/ModelProxy/config.json
 ```
 
-### Tech Stack
+The app creates this file on first launch with default clients for Claude Code and Codex.
+
+The config currently contains:
+
+- `vendors`
+- `clients`
+- `modelMappings`
+- `debug`
+
+Example shape:
+
+```json
+{
+  "clients": [
+    {
+      "clientName": "Claude Code",
+      "port": 8080,
+      "defaultUpstream": "https://api.anthropic.com",
+      "unmappedPolicy": "passthrough"
+    },
+    {
+      "clientName": "Codex",
+      "port": 8081,
+      "defaultUpstream": "https://api.openai.com",
+      "unmappedPolicy": "routeAll",
+      "fallbackVendorID": "VENDOR-UUID",
+      "fallbackTargetModel": "qwen-plus"
+    }
+  ],
+  "vendors": [
+    {
+      "name": "DashScope",
+      "baseURL": "https://dashscope.aliyuncs.com/compatible-mode",
+      "apiKey": "sk-...",
+      "connectTimeoutSeconds": 10,
+      "readTimeoutSeconds": 120,
+      "supportedModels": ["qwen-plus", "qwen-max"]
+    }
+  ],
+  "modelMappings": [
+    {
+      "sourceModel": "claude-haiku-4-5",
+      "targetModel": "qwen-plus",
+      "targetVendorID": "VENDOR-UUID",
+      "backupTargetModel": "qwen-max",
+      "backupTargetVendorID": "BACKUP-VENDOR-UUID"
+    }
+  ],
+  "debug": {
+    "isEnabled": false,
+    "minimumLogLevel": "info",
+    "autoCleanupEnabled": true,
+    "cleanupAfterDays": 7,
+    "compressAfterDays": 3
+  }
+}
+```
+
+## Data Storage
+
+- config: `~/Library/Application Support/ModelProxy/config.json`
+- token stats: `~/Library/Application Support/ModelProxy/token-stats-YYYY-MM-DD.json`
+- debug logs: `~/Library/Application Support/ModelProxy/logs/`
+
+API keys are stored in plaintext in the local config file. That is the current product behavior.
+
+## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
 | Language | Swift 6 |
 | UI | SwiftUI + MenuBarExtra |
-| Proxy Server | SwiftNIO + NIOHTTP1 |
-| Config Storage | JSON + UserDefaults |
-| Minimum OS | macOS 14 (Sonoma) |
-
-## Configuration
-
-### Example routing setup
-
-```json
-{
-  "vendors": [
-    {
-      "name": "Anthropic",
-      "endpoint": "https://api.anthropic.com",
-      "apiKey": "sk-ant-...",
-      "models": ["claude-opus-4-6", "claude-sonnet-4-6"]
-    },
-    {
-      "name": "DashScope",
-      "endpoint": "https://dashscope.aliyuncs.com",
-      "apiKey": "sk-...",
-      "models": ["qwen-plus", "qwen-max"]
-    }
-  ],
-  "routing": {
-    "claude-opus": "Anthropic",
-    "claude-sonnet": "Anthropic",
-    "qwen": "DashScope"
-  }
-}
-```
+| Proxy server | SwiftNIO + NIOHTTP1 + AsyncHTTPClient |
+| Config storage | JSON files in Application Support |
+| Minimum OS | macOS 14.0+ |
 
 ## Development
 
-### Build from command line
+### Build
 
 ```bash
 xcodebuild -project ModelProxy.xcodeproj \
@@ -138,7 +219,7 @@ xcodebuild -project ModelProxy.xcodeproj \
   build
 ```
 
-### Run tests
+### Test
 
 ```bash
 xcodebuild -project ModelProxy.xcodeproj \
@@ -147,36 +228,42 @@ xcodebuild -project ModelProxy.xcodeproj \
   test
 ```
 
-## Project Structure
+## Code Map
 
-```
+```text
 ModelProxy/
-├── App/               # App entry, ModelProxyApp.swift
-├── Proxy/             # HTTP proxy server (SwiftNIO)
-│   ├── ProxyServer.swift
-│   ├── RequestRouter.swift
-│   └── ResponseRelay.swift
-├── Models/            # Data models and config
-│   ├── AppConfig.swift
-│   ├── Vendor.swift
-│   └── ClientConfig.swift
-├── Services/          # Business logic
-└── Views/             # SwiftUI views
-    ├── StatusPopover.swift
-    └── SettingsView.swift
+  App/        app lifecycle, paths, logging
+  Models/     config, routing records, traffic, token stats
+  Proxy/      server, router, forwarder, relay
+  Services/   config store, login item, debug log manager
+  Views/      menu bar popover and settings tabs
 ```
+
+Key files:
+
+- `ModelProxy/App/ModelProxyApp.swift`
+- `ModelProxy/Services/ConfigStore.swift`
+- `ModelProxy/Proxy/ProxyServer.swift`
+- `ModelProxy/Proxy/RequestRouter.swift`
+- `ModelProxy/Proxy/ProxyForwarder.swift`
+- `ModelProxy/Views/StatusPopover.swift`
+- `ModelProxy/Views/SettingsView.swift`
 
 ## Roadmap
 
-- [ ] MCP Server integration
+- [ ] MCP server integration
 - [ ] Model capability auto-discovery
-- [ ] Request/response transformation (opt-in)
-- [ ] Remote access (multi-user)
+- [ ] Request and response transformation controls
+- [ ] Remote access and multi-user support
 
 ## License
 
-MIT
+MIT. See `LICENSE`.
 
 ## Acknowledgments
 
-Built for AI developers who juggle multiple model providers in their daily workflow.
+Built for developers who switch between multiple model providers in daily tool workflows.
+
+## Status
+
+This README reflects the codebase as of March 9, 2026.

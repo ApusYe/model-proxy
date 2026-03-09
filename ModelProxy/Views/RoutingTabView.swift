@@ -88,7 +88,12 @@ private struct MappingRow: View {
         if isEditing {
             VStack(alignment: .leading, spacing: 8) {
                 SourceModelField(text: $editSourceModel)
-                PlainModelField(placeholder: "Target model (vendor model name)", text: $editTargetModel)
+                VendorModelField(
+                    placeholder: "Target model (vendor model name)",
+                    text: $editTargetModel,
+                    vendorSelection: $editVendorID,
+                    vendors: configStore.config.vendors
+                )
                 VendorMenuField(
                     placeholder: "Target vendor",
                     selection: $editVendorID,
@@ -101,7 +106,12 @@ private struct MappingRow: View {
                     Text("Backup Target")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    PlainModelField(placeholder: "Backup model (vendor model name)", text: $editBackupTargetModel)
+                    VendorModelField(
+                        placeholder: "Backup model (vendor model name)",
+                        text: $editBackupTargetModel,
+                        vendorSelection: $editBackupVendorID,
+                        vendors: configStore.config.vendors
+                    )
                     VendorMenuField(
                         placeholder: "Backup vendor",
                         selection: $editBackupVendorID,
@@ -158,6 +168,18 @@ private struct MappingRow: View {
                 }
             }
             .padding(.vertical, 4)
+            .onChange(of: editVendorID) { newVendorID in
+                guard editTargetModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let vendor = configStore.config.vendors.first(where: { $0.id == newVendorID }),
+                      let firstModel = vendor.supportedModels.first else { return }
+                editTargetModel = firstModel
+            }
+            .onChange(of: editBackupVendorID) { newVendorID in
+                guard editBackupTargetModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let vendor = configStore.config.vendors.first(where: { $0.id == newVendorID }),
+                      let firstModel = vendor.supportedModels.first else { return }
+                editBackupTargetModel = firstModel
+            }
         } else {
             HStack {
                 Text(mapping.sourceModel)
@@ -244,7 +266,12 @@ private struct AddMappingRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SourceModelField(text: $selectedSourceModel)
-            PlainModelField(placeholder: "Target model (vendor model name)", text: $targetModel)
+            VendorModelField(
+                placeholder: "Target model (vendor model name)",
+                text: $targetModel,
+                vendorSelection: $selectedVendorID,
+                vendors: configStore.config.vendors
+            )
             VendorMenuField(
                 placeholder: "Target vendor",
                 selection: $selectedVendorID,
@@ -257,7 +284,12 @@ private struct AddMappingRow: View {
                 Text("Backup Target")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                PlainModelField(placeholder: "Backup model (vendor model name)", text: $backupTargetModel)
+                VendorModelField(
+                    placeholder: "Backup model (vendor model name)",
+                    text: $backupTargetModel,
+                    vendorSelection: $backupTargetVendorID,
+                    vendors: configStore.config.vendors
+                )
                 VendorMenuField(
                     placeholder: "Backup vendor",
                     selection: $backupTargetVendorID,
@@ -319,6 +351,23 @@ private struct AddMappingRow: View {
         .padding(.vertical, 4)
         .onAppear {
             selectedVendorID = configStore.config.vendors.first?.id
+            if targetModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let vendor = configStore.config.vendors.first,
+               let firstModel = vendor.supportedModels.first {
+                targetModel = firstModel
+            }
+        }
+        .onChange(of: selectedVendorID) { newVendorID in
+            guard targetModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let vendor = configStore.config.vendors.first(where: { $0.id == newVendorID }),
+                  let firstModel = vendor.supportedModels.first else { return }
+            targetModel = firstModel
+        }
+        .onChange(of: backupTargetVendorID) { newVendorID in
+            guard backupTargetModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let vendor = configStore.config.vendors.first(where: { $0.id == newVendorID }),
+                  let firstModel = vendor.supportedModels.first else { return }
+            backupTargetModel = firstModel
         }
     }
 }
@@ -358,14 +407,56 @@ private struct SourceModelField: View {
     }
 }
 
-private struct PlainModelField: View {
+private struct VendorModelField: View {
     let placeholder: String
     @Binding var text: String
+    @Binding var vendorSelection: UUID?
+    let vendors: [Vendor]
+    @FocusState private var isFocused: Bool
+
+    private var models: [String] {
+        guard let vendorID = vendorSelection,
+              let vendor = vendors.first(where: { $0.id == vendorID }) else {
+            return []
+        }
+        return vendor.supportedModels
+    }
 
     var body: some View {
         TextField(placeholder, text: $text)
             .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()
+            .focused($isFocused)
+            .overlay(alignment: .trailing) {
+                Menu {
+                    if vendorSelection == nil {
+                        Button("Select vendor first") {}
+                            .disabled(true)
+                    } else if models.isEmpty {
+                        Button("No models configured") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(models, id: \.self) { model in
+                            Button(model) { text = model }
+                        }
+                    }
+                    Divider()
+                    Button("Custom...") {
+                        text = ""
+                        isFocused = true
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: menuIconWidth)
+                        .contentShape(Rectangle())
+                }
+                .menuIndicator(.hidden)
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel(placeholder)
+                .padding(.trailing, 4)
+            }
     }
 }
 

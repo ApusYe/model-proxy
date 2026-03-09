@@ -54,6 +54,22 @@ struct ModelProxyTests {
         #expect(decoded.compatibleClientID == clientID)
     }
 
+    // MARK: - Vendor supportedModels round-trip
+
+    @Test func vendorCodableRoundTripWithSupportedModels() throws {
+        let original = Vendor(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            name: "DashScope",
+            baseURL: "https://dashscope.aliyuncs.com/compatible-mode",
+            apiKey: "key",
+            supportedModels: ["qwen-plus", "qwen-max"]
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Vendor.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.supportedModels == ["qwen-plus", "qwen-max"])
+    }
+
     // MARK: - Vendor legacy JSON (no timeout/compatibleClientID fields)
 
     @Test func vendorDecodesLegacyJSON() throws {
@@ -69,6 +85,7 @@ struct ModelProxyTests {
         #expect(decoded.connectTimeoutSeconds == 10)
         #expect(decoded.readTimeoutSeconds == 120)
         #expect(decoded.compatibleClientID == nil)
+        #expect(decoded.supportedModels.isEmpty)
     }
 
     // MARK: - ClientConfig round-trip

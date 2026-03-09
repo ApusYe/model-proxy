@@ -1,6 +1,7 @@
 # Xcode
 *.xcuserstate
-xcuserdata/
+!ModelProxy.xcodeproj
+# xcuserdata/
 DerivedData/
 *.xccheckout
 *.moved-aside

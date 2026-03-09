@@ -73,6 +73,17 @@ private struct MappingRow: View {
         configStore.config.vendors.first(where: { $0.id == mapping.targetVendorID })?.name ?? "Unknown vendor"
     }
 
+    private func roleBadge(_ title: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 2) {
+            Text(title)
+            Image(systemName: icon)
+                .imageScale(.small)
+        }
+        .font(.caption)
+        .foregroundStyle(color)
+        .accessibilityElement(children: .combine)
+    }
+
     var body: some View {
         if isEditing {
             VStack(alignment: .leading, spacing: 8) {
@@ -154,19 +165,21 @@ private struct MappingRow: View {
                 Image(systemName: "arrow.right")
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(mapping.targetModel)
-                        .font(.system(.body, design: .monospaced))
+                    if mapping.backupTargetVendorID == nil {
+                        Text(mapping.targetModel)
+                            .font(.system(.body, design: .monospaced))
+                    }
                     HStack(spacing: 4) {
+                        if mapping.backupTargetVendorID != nil {
+                            Text(mapping.targetModel)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
                         Text(vendorName)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if mapping.backupTargetVendorID != nil {
-                            Text("Primary")
-                                .font(.caption2)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(.blue, in: Capsule())
+                            roleBadge("Primary", icon: "checkmark.circle.fill", color: .blue)
                         }
                     }
                     if let backupVendorID = mapping.backupTargetVendorID {
@@ -177,12 +190,7 @@ private struct MappingRow: View {
                             Text(configStore.config.vendors.first(where: { $0.id == backupVendorID })?.name ?? "Unknown")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("Backup")
-                                .font(.caption2)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(.gray, in: Capsule())
+                            roleBadge("Backup", icon: "arrow.clockwise.circle.fill", color: .secondary)
                         }
                     }
                 }

@@ -86,6 +86,8 @@ struct ModelProxyTests {
         #expect(decoded.readTimeoutSeconds == 120)
         #expect(decoded.compatibleClientID == nil)
         #expect(decoded.supportedModels.isEmpty)
+        #expect(decoded.signingDomain == .compatibleThirdParty)
+        #expect(decoded.replayPolicy == .portableOnly)
     }
 
     // MARK: - ClientConfig round-trip
@@ -216,6 +218,8 @@ struct ModelProxyTests {
         #expect(target.baseURL == "https://dashscope.aliyuncs.com/compatible-mode")
         #expect(target.apiKey == "dash-test-key")
         #expect(target.targetModel == "qwen-turbo")
+        #expect(target.signingDomain == .compatibleThirdParty)
+        #expect(target.replayPolicy == .portableOnly)
     }
 
     // MARK: - RoutingSnapshot: unmapped model passthrough
@@ -234,6 +238,8 @@ struct ModelProxyTests {
         #expect(target.baseURL == "https://api.anthropic.com")
         #expect(target.apiKey == "my-key")
         #expect(target.targetModel == nil)
+        #expect(target.signingDomain == .anthropicOfficial)
+        #expect(target.replayPolicy == .transparent)
     }
 
     // MARK: - RoutingSnapshot: different client uses different defaultUpstream
@@ -573,5 +579,54 @@ struct ModelProxyTests {
         #expect(replaced.replaced == false)
         #expect(replaced.data == Data(source.utf8))
         #expect(replaced.originalLength == replaced.newLength)
+    }
+
+    // MARK: - App launch smoke
+
+    @Test func hostAppBundleHasExpectedIdentity() throws {
+        let hostBundle = Bundle.main
+        #expect(hostBundle.bundleIdentifier == "com.90percent.ModelProxy")
+        #expect(hostBundle.bundleURL.lastPathComponent == "ModelProxy.app")
+
+        let executableURL = try #require(hostBundle.executableURL)
+        #expect(FileManager.default.fileExists(atPath: executableURL.path))
+        #expect(executableURL.lastPathComponent == "ModelProxy")
+    }
+
+    // MARK: - Projection diagnostics
+
+    @Test func summarizeRequestBodyCountsPortableRelevantBlocks() throws {
+        let request = try JSONSerialization.data(withJSONObject: [
+            "model": "claude-haiku-4-5-20251001",
+            "thinking": ["type": "enabled", "budget_tokens": 32000],
+            "messages": [
+                [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "thinking", "thinking": "secret", "signature": "sig_1"],
+                        ["type": "redacted_thinking", "data": "opaque"],
+                        ["type": "text", "text": "Visible text"],
+                        ["type": "tool_use", "id": "toolu_1", "name": "bash", "input": ["cmd": "git status"]],
+                        ["type": "tool_result", "tool_use_id": "toolu_1", "content": "clean"]
+                    ]
+                ],
+                ["role": "user", "content": "Ship it"]
+            ]
+        ], options: [.sortedKeys])
+
+        let summary = try #require(ProxyForwarder.summarizeRequestBody(request))
+        #expect(summary.messageCount == 2)
+        #expect(summary.assistantMessageCount == 1)
+        #expect(summary.arrayContentMessageCount == 1)
+        #expect(summary.stringContentMessageCount == 1)
+        #expect(summary.textBlockCount == 1)
+        #expect(summary.thinkingBlockCount == 1)
+        #expect(summary.signedThinkingBlockCount == 1)
+        #expect(summary.redactedThinkingBlockCount == 1)
+        #expect(summary.toolUseBlockCount == 1)
+        #expect(summary.toolResultBlockCount == 1)
+        #expect(summary.otherBlockCount == 0)
+        #expect(summary.topLevelThinkingType == "enabled")
+        #expect(summary.topLevelThinkingBudget == 32000)
     }
 }

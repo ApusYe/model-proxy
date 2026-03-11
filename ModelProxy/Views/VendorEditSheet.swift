@@ -17,6 +17,8 @@ struct VendorEditSheet: View {
     @State private var readTimeoutSeconds: Int = 120
     @State private var compatibleClientID: UUID?
     @State private var supportedModels: [String] = [""]
+    @State private var signingDomain: SigningDomain = .compatibleThirdParty
+    @State private var replayPolicy: TranscriptReplayPolicy = .portableOnly
 
     private var isEditing: Bool { editingVendorID != nil }
     private var title: String { isEditing ? "Edit Vendor" : "Add Vendor" }
@@ -47,6 +49,18 @@ struct VendorEditSheet: View {
                         Text("All Clients").tag(UUID?.none)
                         ForEach(configStore.config.clients) { client in
                             Text(client.clientName).tag(UUID?.some(client.id))
+                        }
+                    }
+
+                    Picker("Signing Domain", selection: $signingDomain) {
+                        ForEach(SigningDomain.allCases, id: \.self) { domain in
+                            Text(domain.displayName).tag(domain)
+                        }
+                    }
+
+                    Picker("Replay Policy", selection: $replayPolicy) {
+                        ForEach(TranscriptReplayPolicy.allCases, id: \.self) { policy in
+                            Text(policy.displayName).tag(policy)
                         }
                     }
                 }
@@ -120,6 +134,8 @@ struct VendorEditSheet: View {
                 readTimeoutSeconds = vendor.readTimeoutSeconds
                 compatibleClientID = vendor.compatibleClientID
                 supportedModels = vendor.supportedModels.isEmpty ? [""] : vendor.supportedModels
+                signingDomain = vendor.signingDomain
+                replayPolicy = vendor.replayPolicy
             }
         }
     }
@@ -135,6 +151,8 @@ struct VendorEditSheet: View {
             configStore.config.vendors[idx].readTimeoutSeconds = readTimeoutSeconds
             configStore.config.vendors[idx].compatibleClientID = compatibleClientID
             configStore.config.vendors[idx].supportedModels = normalizedSupportedModels
+            configStore.config.vendors[idx].signingDomain = signingDomain
+            configStore.config.vendors[idx].replayPolicy = replayPolicy
         } else {
             let v = Vendor(
                 name: name,
@@ -143,7 +161,9 @@ struct VendorEditSheet: View {
                 connectTimeoutSeconds: connectTimeoutSeconds,
                 readTimeoutSeconds: readTimeoutSeconds,
                 compatibleClientID: compatibleClientID,
-                supportedModels: normalizedSupportedModels
+                supportedModels: normalizedSupportedModels,
+                signingDomain: signingDomain,
+                replayPolicy: replayPolicy
             )
             configStore.config.vendors.append(v)
         }
@@ -168,5 +188,31 @@ struct VendorEditSheet: View {
             result.append(trimmed)
         }
         return result
+    }
+}
+
+private extension SigningDomain {
+    var displayName: String {
+        switch self {
+        case .anthropicOfficial:
+            return "Anthropic API"
+        case .bedrockAnthropic:
+            return "Bedrock Anthropic"
+        case .vertexAnthropic:
+            return "Vertex Anthropic"
+        case .compatibleThirdParty:
+            return "Compatible Third-Party"
+        }
+    }
+}
+
+private extension TranscriptReplayPolicy {
+    var displayName: String {
+        switch self {
+        case .transparent:
+            return "Transparent Replay"
+        case .portableOnly:
+            return "Portable Blocks Only"
+        }
     }
 }

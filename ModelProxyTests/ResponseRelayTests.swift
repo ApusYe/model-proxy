@@ -1,5 +1,9 @@
 import Testing
 import Foundation
+import AsyncHTTPClient
+import NIOCore
+import NIOEmbedded
+import NIOHTTP1
 @testable import ModelProxy
 
 struct ResponseRelayTests {
@@ -53,5 +57,58 @@ struct ResponseRelayTests {
         #expect(replay.statusCode == 200)
         #expect(replay.bodyChunks == [Data("{\"ok\":true}".utf8)])
         #expect(replay.headers.contains { $0.0 == "content-type" && $0.1 == "application/json" })
+    }
+
+    @Test func replayWritesCachedResponseToChannel() async throws {
+        let channel = EmbeddedChannel()
+        let cachedResponse = ReplayableBranchResponse(
+            statusCode: 200,
+            headers: [("content-type", "application/json"), ("x-request-id", "abc")],
+            bodyChunks: [Data("{\"ok\":true}".utf8)]
+        )
+
+        await ResponseRelay.replay(
+            cachedResponse: cachedResponse,
+            to: channel,
+            requestID: "replay-test"
+        )
+
+        let headPart = try #require(try channel.readOutbound(as: HTTPServerResponsePart.self))
+        guard case .head(let head) = headPart else {
+            Issue.record("Expected response head"); return
+        }
+        #expect(head.status == .ok)
+        #expect(head.headers.contains(name: "content-type"))
+
+        let bodyPart = try #require(try channel.readOutbound(as: HTTPServerResponsePart.self))
+        guard case .body(let body) = bodyPart else {
+            Issue.record("Expected response body"); return
+        }
+        guard case .byteBuffer(let bodyBuffer) = body else {
+            Issue.record("Expected ByteBuffer body"); return
+        }
+        #expect(bodyBuffer.getString(at: bodyBuffer.readerIndex, length: bodyBuffer.readableBytes) == "{\"ok\":true}")
+
+        let endPart = try #require(try channel.readOutbound(as: HTTPServerResponsePart.self))
+        guard case .end = endPart else {
+            Issue.record("Expected response end"); return
+        }
+    }
+
+    @Test func relayHandlesClosedChannelWriteFailureWithoutThrowing() async {
+        let channel = EmbeddedChannel()
+        try? await channel.close().get()
+        let response = HTTPClientResponse(
+            status: .ok,
+            headers: ["content-type": "application/json"]
+        )
+
+        let replay = await ResponseRelay.relay(
+            upstreamResponse: response,
+            to: channel,
+            requestID: "relay-closed-channel"
+        )
+
+        #expect(replay == nil)
     }
 }

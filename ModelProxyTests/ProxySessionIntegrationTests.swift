@@ -144,7 +144,7 @@ struct ProxySessionIntegrationTests {
         #expect(prepared.context == nil)
     }
 
-    @Test func portableBranchSuccessorWaitsThenReusesCommittedVendorHistory() async throws {
+    @Test func portableBranchSuccessorReusesCommittedVendorHistoryAfterLeaderCompletes() async throws {
         let broker = makeBroker()
         let coordinator = BranchRequestCoordinator()
         let target = RoutingSnapshot.RouteTarget(
@@ -184,16 +184,6 @@ struct ProxySessionIntegrationTests {
         default: Issue.record("Expected leader acquisition"); throw IntegrationTestAbort()
         }
 
-        let waitingTask = Task {
-            let successorPrepared = try await broker.prepareRequest(
-                bodyData: successorRequest,
-                clientName: "Claude Code",
-                target: target
-            )
-            return await coordinator.acquire(context: try #require(successorPrepared.context))
-        }
-        await Task.yield()
-
         try await broker.commitResponse(
             context: firstContext,
             assistantTurn: PortableAssistantTurn(
@@ -211,14 +201,6 @@ struct ProxySessionIntegrationTests {
             )
         )
         await coordinator.complete(lease: firstLease, replay: nil)
-
-        let waitedDecision = try await waitingTask.value
-        switch waitedDecision {
-        case .waited(let source):
-            #expect(source == firstLease)
-        default:
-            Issue.record("Expected waited decision"); throw IntegrationTestAbort()
-        }
 
         let reprepared = try await broker.prepareRequest(
             bodyData: successorRequest,

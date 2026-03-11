@@ -142,4 +142,23 @@ struct BranchMergeReducerTests {
         let blocks = try #require(portable["content"] as? [[String: Any]])
         #expect(blocks.first?["text"] as? String == "Buffered")
     }
+
+    @Test func sseNormalizerFinishIsConsumptiveAndSecondFinishReturnsNil() throws {
+        let normalizer = PortableContentNormalizer().makeSSEStreamNormalizer()
+        let allocator = ByteBufferAllocator()
+        let event = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Once\"}}\n\n"
+        var buffer = allocator.buffer(capacity: event.utf8.count)
+        buffer.writeString(event)
+
+        _ = try normalizer.push(chunk: buffer)
+
+        let firstTurn = try #require(try normalizer.finish())
+        let portableJSONObject = try JSONSerialization.jsonObject(with: firstTurn.portableMessageData)
+        let portable = try #require(portableJSONObject as? [String: Any])
+        let blocks = try #require(portable["content"] as? [[String: Any]])
+        #expect(blocks.first?["text"] as? String == "Once")
+
+        let secondTurn = try normalizer.finish()
+        #expect(secondTurn == nil)
+    }
 }

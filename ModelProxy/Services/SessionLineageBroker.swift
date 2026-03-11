@@ -21,6 +21,8 @@ actor SessionLineageBroker: SessionLineageBrokering {
     private let fingerprint: any ConversationFingerprinting
     private let store: any LineageStoring
     private var lineages: [String: ConversationLineage]
+    // Keep enough recent conversations for active branch reuse without letting the on-disk
+    // cache grow unbounded for a single client.
     private let maxCachedLineagesPerClient = 24
 
     init(
@@ -31,7 +33,12 @@ actor SessionLineageBroker: SessionLineageBrokering {
         self.projector = projector
         self.fingerprint = fingerprint
         self.store = store
-        self.lineages = (try? store.loadLineages()) ?? [:]
+        do {
+            self.lineages = try store.loadLineages()
+        } catch {
+            AppLog.proxy.error("[Proxy] [Lineage] failed to load persisted lineages; starting cold cache: \(String(describing: error))")
+            self.lineages = [:]
+        }
     }
 
     func prepareRequest(
@@ -87,9 +94,11 @@ actor SessionLineageBroker: SessionLineageBrokering {
             lastUpdatedAt: .now
         )
         lineage.lastUpdatedAt = .now
-        lineages[context.lineageKey] = lineage
-        trimLineages(for: context.clientName)
-        try store.saveLineages(lineages)
+        var updatedLineages = lineages
+        updatedLineages[context.lineageKey] = lineage
+        trimLineages(for: context.clientName, in: &updatedLineages)
+        try store.saveLineages(updatedLineages)
+        lineages = updatedLineages
     }
 
     func branches(for clientName: String) -> [BranchTranscript] {
@@ -98,7 +107,7 @@ actor SessionLineageBroker: SessionLineageBrokering {
             .flatMap { $0.branches.values }
     }
 
-    private func trimLineages(for clientName: String) {
+    private func trimLineages(for clientName: String, in lineages: inout [String: ConversationLineage]) {
         let matchingKeys = lineages.values
             .filter { $0.clientName == clientName }
             .sorted { $0.lastUpdatedAt > $1.lastUpdatedAt }

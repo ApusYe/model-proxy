@@ -15,16 +15,33 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
     private let httpClient: HTTPClient
     private let trafficLog: TrafficLog
     private let tokenStatsStore: TokenStatsStore
+    private let clientName: String
+    private let lineageBroker: any SessionLineageBrokering
+    private let portableNormalizer: any PortableContentNormalizing
+    private let requestCoordinator: any BranchRequestCoordinating
 
     // Accumulated state for the current request.
     private var requestHead: HTTPRequestHead?
     private var bodyBuffer: ByteBuffer?
 
-    init(router: RequestRouter, httpClient: HTTPClient, trafficLog: TrafficLog, tokenStatsStore: TokenStatsStore) {
+    init(
+        clientName: String,
+        router: RequestRouter,
+        httpClient: HTTPClient,
+        trafficLog: TrafficLog,
+        tokenStatsStore: TokenStatsStore,
+        lineageBroker: any SessionLineageBrokering,
+        portableNormalizer: any PortableContentNormalizing,
+        requestCoordinator: any BranchRequestCoordinating
+    ) {
+        self.clientName = clientName
         self.router = router
         self.httpClient = httpClient
         self.trafficLog = trafficLog
         self.tokenStatsStore = tokenStatsStore
+        self.lineageBroker = lineageBroker
+        self.portableNormalizer = portableNormalizer
+        self.requestCoordinator = requestCoordinator
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -53,16 +70,24 @@ final class ProxyChannelHandler: ChannelInboundHandler, @unchecked Sendable {
             let httpClient = self.httpClient
             let trafficLog = self.trafficLog
             let tokenStatsStore = self.tokenStatsStore
+            let clientName = self.clientName
+            let lineageBroker = self.lineageBroker
+            let portableNormalizer = self.portableNormalizer
+            let requestCoordinator = self.requestCoordinator
 
             Task {
                 await ProxyForwarder.forward(
+                    clientName: clientName,
                     head: head,
                     body: body,
                     channel: channel,
                     router: router,
                     httpClient: httpClient,
                     trafficLog: trafficLog,
-                    tokenStatsStore: tokenStatsStore
+                    tokenStatsStore: tokenStatsStore,
+                    lineageBroker: lineageBroker,
+                    portableNormalizer: portableNormalizer,
+                    requestCoordinator: requestCoordinator
                 )
             }
 

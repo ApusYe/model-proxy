@@ -22,6 +22,10 @@ struct RoutingSnapshot: Sendable {
         let connectTimeoutSeconds: Int
         /// Per-vendor read timeout in seconds.
         let readTimeoutSeconds: Int
+        /// Transcript signing domain for replay portability decisions.
+        let signingDomain: SigningDomain
+        /// Replay policy for this target.
+        let replayPolicy: TranscriptReplayPolicy
     }
 
     // MARK: - Failover state
@@ -71,7 +75,9 @@ struct RoutingSnapshot: Sendable {
                 targetModel: mapping.targetModel,
                 isPassthrough: false,
                 connectTimeoutSeconds: vendor.connectTimeoutSeconds,
-                readTimeoutSeconds: vendor.readTimeoutSeconds
+                readTimeoutSeconds: vendor.readTimeoutSeconds,
+                signingDomain: vendor.signingDomain,
+                replayPolicy: vendor.replayPolicy
             )
             var targets = [primary]
 
@@ -87,7 +93,9 @@ struct RoutingSnapshot: Sendable {
                     targetModel: mapping.backupTargetModel ?? mapping.targetModel,
                     isPassthrough: false,
                     connectTimeoutSeconds: backupVendor.connectTimeoutSeconds,
-                    readTimeoutSeconds: backupVendor.readTimeoutSeconds
+                    readTimeoutSeconds: backupVendor.readTimeoutSeconds,
+                    signingDomain: backupVendor.signingDomain,
+                    replayPolicy: backupVendor.replayPolicy
                 )
                 targets.append(backup)
             }
@@ -115,7 +123,9 @@ struct RoutingSnapshot: Sendable {
                 targetModel: resolvedModel,
                 isPassthrough: false,
                 connectTimeoutSeconds: vendor.connectTimeoutSeconds,
-                readTimeoutSeconds: vendor.readTimeoutSeconds
+                readTimeoutSeconds: vendor.readTimeoutSeconds,
+                signingDomain: vendor.signingDomain,
+                replayPolicy: vendor.replayPolicy
             )
         } else {
             self.fallbackTarget = nil
@@ -143,7 +153,9 @@ struct RoutingSnapshot: Sendable {
                 targetModel: nil,
                 isPassthrough: true,
                 connectTimeoutSeconds: 10,
-                readTimeoutSeconds: 120
+                readTimeoutSeconds: 120,
+                signingDomain: SigningDomain.infer(fromBaseURL: passthroughBaseURL),
+                replayPolicy: .transparent
             )), defaultState)
         case .routeAll:
             if let fallback = fallbackTarget {
@@ -158,7 +170,9 @@ struct RoutingSnapshot: Sendable {
                 targetModel: nil,
                 isPassthrough: true,
                 connectTimeoutSeconds: 10,
-                readTimeoutSeconds: 120
+                readTimeoutSeconds: 120,
+                signingDomain: SigningDomain.infer(fromBaseURL: passthroughBaseURL),
+                replayPolicy: .transparent
             )), defaultState)
         case .block:
             return (.blocked(reason: "Model '\(model)' is not mapped and this client is set to block unmapped models."), defaultState)

@@ -18,8 +18,13 @@ enum ResponseRelay {
         upstreamResponse: HTTPClientResponse,
         to channel: any Channel,
         onUsage: UsageCallback? = nil,
-        requestID: String
-    ) async {
+        requestID: String,
+        branchContext: PreparedBranchContext? = nil,
+        branchLease: BranchRequestLease? = nil,
+        portableNormalizer: (any PortableContentNormalizing)? = nil,
+        lineageBroker: (any SessionLineageBrokering)? = nil,
+        requestCoordinator: (any BranchRequestCoordinating)? = nil
+    ) async -> ReplayableBranchResponse? {
         // 1. Forward status + response headers.
         var responseHead = HTTPResponseHead(
             version: .http1_1,
@@ -27,7 +32,7 @@ enum ResponseRelay {
         )
         for (name, value) in upstreamResponse.headers {
             let lower = name.lowercased()
-            if lower == "transfer-encoding" || lower == "connection" { continue }
+            if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" { continue }
             responseHead.headers.add(name: name, value: value)
         }
         responseHead.headers.add(name: "connection", value: "close")
@@ -37,6 +42,10 @@ enum ResponseRelay {
         let isSSE = contentType.lowercased().contains("text/event-stream")
         let statusCode = Int(upstreamResponse.status.code)
         let isError = statusCode >= 400
+        let shouldNormalize = branchContext != nil && portableNormalizer != nil && !isError
+        let shouldCaptureReplay = branchLease != nil
+        let replayHeaders = responseHead.headers.map { ($0.name, $0.value) }
+        var replayChunks: [Data] = []
 
         do {
             try await channel.writeAndFlush(
@@ -49,10 +58,29 @@ enum ResponseRelay {
                 var accumulatedInput = 0
                 var accumulatedOutput = 0
                 var errorAccumulator = Data()
+                let streamNormalizer = shouldNormalize ? portableNormalizer?.makeSSEStreamNormalizer() : nil
                 for try await chunk in upstreamResponse.body {
-                    try await channel.writeAndFlush(
-                        NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
-                    ).get()
+                    if let streamNormalizer {
+                        let normalizedEvents = try streamNormalizer.push(chunk: chunk)
+                        for eventData in normalizedEvents {
+                            if shouldCaptureReplay {
+                                replayChunks.append(eventData)
+                            }
+                            var out = channel.allocator.buffer(capacity: eventData.count)
+                            out.writeBytes(eventData)
+                            try await channel.writeAndFlush(
+                                NIOAny(HTTPServerResponsePart.body(.byteBuffer(out)))
+                            ).get()
+                        }
+                    } else {
+                        if shouldCaptureReplay,
+                           let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                            replayChunks.append(bytes)
+                        }
+                        try await channel.writeAndFlush(
+                            NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
+                        ).get()
+                    }
 
                     // Scan chunk for usage data, accumulate across events.
                     if onUsage != nil {
@@ -72,22 +100,41 @@ enum ResponseRelay {
                     let preview = String(data: errorAccumulator.prefix(2048), encoding: .utf8) ?? "<non-UTF8, \(errorAccumulator.count)B>"
                     AppLog.proxy.warning("[Proxy] [\(requestID)] Upstream \(statusCode) body (\(errorAccumulator.count)B): \(preview)")
                 }
+                if let streamNormalizer,
+                   let branchContext,
+                   let lineageBroker,
+                   let assistantTurn = try streamNormalizer.finish() {
+                    let shouldCommit = if let branchLease, let requestCoordinator {
+                        await requestCoordinator.shouldCommit(lease: branchLease)
+                    } else {
+                        true
+                    }
+                    if shouldCommit {
+                        try await lineageBroker.commitResponse(context: branchContext, assistantTurn: assistantTurn)
+                    } else {
+                        AppLog.proxy.debug("[Proxy] [\(requestID)] staleCommitDropped lineage=\(branchContext.lineageKey) branch=\(branchContext.branchKey) generation=\(branchLease?.generation ?? 0)")
+                    }
+                }
             } else {
                 // 2b. Non-streaming: forward chunks immediately; accumulate a parallel copy
                 // for token usage extraction. This doubles peak memory for the response body,
                 // but most API responses are small enough that this is acceptable.
                 var bodyAccumulator = Data()
-                let shouldAccumulate = onUsage != nil || isError
+                let shouldAccumulate = onUsage != nil || isError || shouldNormalize
 
                 for try await chunk in upstreamResponse.body {
-                    try await channel.writeAndFlush(
-                        NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
-                    ).get()
-
                     if shouldAccumulate {
                         if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
                             bodyAccumulator.append(bytes)
+                            if shouldCaptureReplay && !shouldNormalize {
+                                replayChunks.append(bytes)
+                            }
                         }
+                    }
+                    if !shouldNormalize {
+                        try await channel.writeAndFlush(
+                            NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
+                        ).get()
                     }
                 }
 
@@ -101,6 +148,32 @@ enum ResponseRelay {
                     let preview = String(data: bodyAccumulator.prefix(2048), encoding: .utf8) ?? "<non-UTF8, \(bodyAccumulator.count)B>"
                     AppLog.proxy.warning("[Proxy] [\(requestID)] Upstream \(statusCode) body (\(bodyAccumulator.count)B): \(preview)")
                 }
+                if shouldNormalize,
+                   let portableNormalizer,
+                   let branchContext,
+                   let lineageBroker {
+                    let normalized = try portableNormalizer.normalizeJSONBody(bodyAccumulator)
+                    if shouldCaptureReplay {
+                        replayChunks = [normalized.bodyData]
+                    }
+                    var out = channel.allocator.buffer(capacity: normalized.bodyData.count)
+                    out.writeBytes(normalized.bodyData)
+                    try await channel.writeAndFlush(
+                        NIOAny(HTTPServerResponsePart.body(.byteBuffer(out)))
+                    ).get()
+                    if let assistantTurn = normalized.assistantTurn {
+                        let shouldCommit = if let branchLease, let requestCoordinator {
+                            await requestCoordinator.shouldCommit(lease: branchLease)
+                        } else {
+                            true
+                        }
+                        if shouldCommit {
+                            try await lineageBroker.commitResponse(context: branchContext, assistantTurn: assistantTurn)
+                        } else {
+                            AppLog.proxy.debug("[Proxy] [\(requestID)] staleCommitDropped lineage=\(branchContext.lineageKey) branch=\(branchContext.branchKey) generation=\(branchLease?.generation ?? 0)")
+                        }
+                    }
+                }
             }
 
             // 3. Signal end of response.
@@ -110,6 +183,53 @@ enum ResponseRelay {
 
         } catch {
             AppLog.proxy.warning("[Proxy] [\(requestID)] Response relay write error (client may have disconnected): \(error)")
+        }
+
+        try? await channel.close().get()
+        if shouldCaptureReplay {
+            return ReplayableBranchResponse(
+                statusCode: statusCode,
+                headers: replayHeaders,
+                bodyChunks: replayChunks
+            )
+        }
+        return nil
+    }
+
+    static func replay(
+        cachedResponse: ReplayableBranchResponse,
+        to channel: any Channel,
+        requestID: String
+    ) async {
+        var responseHead = HTTPResponseHead(
+            version: .http1_1,
+            status: HTTPResponseStatus(statusCode: cachedResponse.statusCode)
+        )
+        for (name, value) in cachedResponse.headers {
+            let lower = name.lowercased()
+            if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" { continue }
+            responseHead.headers.add(name: name, value: value)
+        }
+        responseHead.headers.add(name: "connection", value: "close")
+
+        do {
+            try await channel.writeAndFlush(
+                NIOAny(HTTPServerResponsePart.head(responseHead))
+            ).get()
+
+            for bodyChunk in cachedResponse.bodyChunks {
+                var out = channel.allocator.buffer(capacity: bodyChunk.count)
+                out.writeBytes(bodyChunk)
+                try await channel.writeAndFlush(
+                    NIOAny(HTTPServerResponsePart.body(.byteBuffer(out)))
+                ).get()
+            }
+
+            try await channel.writeAndFlush(
+                NIOAny(HTTPServerResponsePart.end(nil))
+            ).get()
+        } catch {
+            AppLog.proxy.warning("[Proxy] [\(requestID)] Cached response replay write error: \(error)")
         }
 
         try? await channel.close().get()

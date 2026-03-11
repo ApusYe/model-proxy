@@ -24,11 +24,22 @@ final class ProxyServer {
     let trafficLog: TrafficLog = TrafficLog()
     /// Token stats store shared with all channel handlers.
     let tokenStatsStore: TokenStatsStore
+    private let lineageBroker: any SessionLineageBrokering
+    private let portableNormalizer: any PortableContentNormalizing
+    private let requestCoordinator: any BranchRequestCoordinating
 
     // MARK: - Init
 
-    init(tokenStatsStore: TokenStatsStore) {
+    init(
+        tokenStatsStore: TokenStatsStore,
+        lineageBroker: any SessionLineageBrokering = SessionLineageBroker(),
+        portableNormalizer: any PortableContentNormalizing = PortableContentNormalizer(),
+        requestCoordinator: any BranchRequestCoordinating = BranchRequestCoordinator()
+    ) {
         self.tokenStatsStore = tokenStatsStore
+        self.lineageBroker = lineageBroker
+        self.portableNormalizer = portableNormalizer
+        self.requestCoordinator = requestCoordinator
     }
 
     // MARK: - Internal State
@@ -77,7 +88,16 @@ final class ProxyServer {
                 .childChannelInitializer { channel in
                     channel.pipeline.configureHTTPServerPipeline(withErrorHandling: true).flatMap {
                         channel.pipeline.addHandler(
-                            ProxyChannelHandler(router: router, httpClient: client, trafficLog: trafficLog, tokenStatsStore: tokenStatsStore)
+                            ProxyChannelHandler(
+                                clientName: clientCfg.clientName,
+                                router: router,
+                                httpClient: client,
+                                trafficLog: trafficLog,
+                                tokenStatsStore: tokenStatsStore,
+                                lineageBroker: self.lineageBroker,
+                                portableNormalizer: self.portableNormalizer,
+                                requestCoordinator: self.requestCoordinator
+                            )
                         )
                     }
                 }

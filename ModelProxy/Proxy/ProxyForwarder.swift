@@ -9,13 +9,17 @@ import OSLog
 enum ProxyForwarder {
 
     static func forward(
+        clientName: String,
         head: HTTPRequestHead,
         body: ByteBuffer,
         channel: any Channel,
         router: RequestRouter,
         httpClient: HTTPClient,
         trafficLog: TrafficLog,
-        tokenStatsStore: TokenStatsStore
+        tokenStatsStore: TokenStatsStore,
+        lineageBroker: any SessionLineageBrokering,
+        portableNormalizer: any PortableContentNormalizing,
+        requestCoordinator: any BranchRequestCoordinating
     ) async {
         let requestID = String(UUID().uuidString.prefix(8))
         let startTime = Date.now
@@ -58,10 +62,93 @@ enum ProxyForwarder {
             "[Proxy] [\(requestID)] \(head.method.rawValue) \(head.uri) model=\(model) \(routeType) → \(target.baseURL) body=\(originalBodyData.count)B cl=\(originalCL) thinking=\(hasThinking) signature=\(hasSignature)"
         )
 
+        // 3b. Diagnostic logging for thinking/signature investigation (debug mode only).
+        if hasThinking || hasSignature {
+            let debugEnabled = await MainActor.run { AppLogManager.shared.isEnabled }
+            if debugEnabled {
+                Self.logThinkingDiagnostics(body: originalBodyData, requestID: requestID)
+            }
+        }
+
+        let initialPreparedRequest: PreparedRequest
+        do {
+            initialPreparedRequest = try await lineageBroker.prepareRequest(
+                bodyData: originalBodyData,
+                clientName: clientName,
+                target: target
+            )
+        } catch {
+            AppLog.proxy.error("[Proxy] [\(requestID)] Lineage prepare failed: \(error)")
+            await Self.sendError(channel: channel, status: .badRequest, message: "Request projection failed: \(error)")
+            return
+        }
+
+        let debugEnabled = await MainActor.run { AppLogManager.shared.isEnabled }
+        if debugEnabled {
+            Self.logProjectionDiagnostics(
+                requestID: requestID,
+                originalBody: originalBodyData,
+                preparedRequest: initialPreparedRequest
+            )
+        }
+
+        var preparedRequest = initialPreparedRequest
+        var branchLease: BranchRequestLease?
+        while let context = preparedRequest.context {
+            let decision = await requestCoordinator.acquire(context: context)
+            if debugEnabled {
+                Self.logCoordinatorDiagnostics(requestID: requestID, decision: decision, context: context)
+            }
+            switch decision {
+            case .acquired(let lease):
+                branchLease = lease
+                break
+            case .replay(let cachedResponse, _):
+                await ResponseRelay.replay(
+                    cachedResponse: cachedResponse,
+                    to: channel,
+                    requestID: requestID
+                )
+                let duration = Date.now.timeIntervalSince(startTime)
+                let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
+                    ? .passthrough
+                    : .mapped(targetModel: target.targetModel ?? model)
+                let entry = TrafficEntry(
+                    model: model,
+                    routeType: entryRouteType,
+                    httpStatus: cachedResponse.statusCode,
+                    duration: duration
+                )
+                await MainActor.run { trafficLog.append(entry) }
+                return
+            case .waited:
+                do {
+                    preparedRequest = try await lineageBroker.prepareRequest(
+                        bodyData: originalBodyData,
+                        clientName: clientName,
+                        target: target
+                    )
+                } catch {
+                    AppLog.proxy.error("[Proxy] [\(requestID)] Lineage reprepare failed: \(error)")
+                    await Self.sendError(channel: channel, status: .badRequest, message: "Request reprojection failed: \(error)")
+                    return
+                }
+                if debugEnabled {
+                    Self.logProjectionDiagnostics(
+                        requestID: requestID,
+                        originalBody: originalBodyData,
+                        preparedRequest: preparedRequest
+                    )
+                }
+                continue
+            }
+            break
+        }
+
         // 4. Build and send upstream request.
         let (upstreamResponse, usedTarget) = await Self.executeWithFailover(
             head: head,
-            originalBodyData: originalBodyData,
+            bodyData: preparedRequest.bodyData,
             primaryTarget: target,
             model: model,
             router: router,
@@ -74,6 +161,9 @@ enum ProxyForwarder {
         await router.updateRouteState(model: model, state: routeState)
 
         guard let upstreamResponse, let usedTarget else {
+            if let branchLease {
+                await requestCoordinator.complete(lease: branchLease, replay: nil)
+            }
             // executeWithFailover already sent error to channel on total failure.
             let duration = Date.now.timeIntervalSince(startTime)
             let entryRouteType: TrafficEntry.RouteType = target.isPassthrough
@@ -107,12 +197,20 @@ enum ProxyForwarder {
         )
 
         // 8. Relay response.
-        await ResponseRelay.relay(
+        let replayableResponse = await ResponseRelay.relay(
             upstreamResponse: upstreamResponse,
             to: channel,
             onUsage: onUsage,
-            requestID: requestID
+            requestID: requestID,
+            branchContext: preparedRequest.context,
+            branchLease: branchLease,
+            portableNormalizer: portableNormalizer,
+            lineageBroker: lineageBroker,
+            requestCoordinator: requestCoordinator
         )
+        if let branchLease {
+            await requestCoordinator.complete(lease: branchLease, replay: replayableResponse)
+        }
 
         // 9. Publish traffic event with actual upstream status code.
         let duration = Date.now.timeIntervalSince(startTime)
@@ -126,7 +224,7 @@ enum ProxyForwarder {
     /// Returns the response and the target that was actually used, or (nil, nil) on total failure.
     private static func executeWithFailover(
         head: HTTPRequestHead,
-        originalBodyData: Data,
+        bodyData: Data,
         primaryTarget: RoutingSnapshot.RouteTarget,
         model: String,
         router: RequestRouter,
@@ -138,7 +236,7 @@ enum ProxyForwarder {
         // Try with primary (or current active) target.
         let primaryResponse = await Self.executeUpstream(
             head: head,
-            originalBodyData: originalBodyData,
+            bodyData: bodyData,
             target: primaryTarget,
             httpClient: httpClient,
             requestID: requestID
@@ -179,7 +277,7 @@ enum ProxyForwarder {
 
                 let backupResponse = await Self.executeUpstream(
                     head: head,
-                    originalBodyData: originalBodyData,
+                    bodyData: bodyData,
                     target: backupTarget,
                     httpClient: httpClient,
                     requestID: requestID
@@ -211,7 +309,7 @@ enum ProxyForwarder {
     /// Build and execute a single upstream request for a given target.
     private static func executeUpstream(
         head: HTTPRequestHead,
-        originalBodyData: Data,
+        bodyData: Data,
         target: RoutingSnapshot.RouteTarget,
         httpClient: HTTPClient,
         requestID: String
@@ -237,8 +335,8 @@ enum ProxyForwarder {
             upstreamHeaders.add(name: "Host", value: host)
         }
 
-        // Replace model field using ORIGINAL body.
-        var bodyData = originalBodyData
+        // Replace model field using prepared body.
+        var bodyData = bodyData
         if let targetModel = target.targetModel {
             let replacement = Self.replaceModelField(in: bodyData, with: targetModel)
             bodyData = replacement.data
@@ -432,6 +530,192 @@ enum ProxyForwarder {
 
     private static func containsJSONStringField(_ data: Data, field: String) -> Bool {
         data.range(of: Data(("\"\(field)\"").utf8)) != nil
+    }
+
+    struct RequestStructureSummary: Sendable, Equatable {
+        let bodyBytes: Int
+        let messageCount: Int
+        let assistantMessageCount: Int
+        let arrayContentMessageCount: Int
+        let stringContentMessageCount: Int
+        let textBlockCount: Int
+        let thinkingBlockCount: Int
+        let signedThinkingBlockCount: Int
+        let redactedThinkingBlockCount: Int
+        let toolUseBlockCount: Int
+        let toolResultBlockCount: Int
+        let otherBlockCount: Int
+        let topLevelThinkingType: String?
+        let topLevelThinkingBudget: Int?
+    }
+
+    static func summarizeRequestBody(_ body: Data) -> RequestStructureSummary? {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
+        let messages = json["messages"] as? [[String: Any]] ?? []
+        let thinkingConfig = json["thinking"] as? [String: Any]
+
+        var assistantMessageCount = 0
+        var arrayContentMessageCount = 0
+        var stringContentMessageCount = 0
+        var textBlockCount = 0
+        var thinkingBlockCount = 0
+        var signedThinkingBlockCount = 0
+        var redactedThinkingBlockCount = 0
+        var toolUseBlockCount = 0
+        var toolResultBlockCount = 0
+        var otherBlockCount = 0
+
+        for message in messages {
+            if (message["role"] as? String) == "assistant" {
+                assistantMessageCount += 1
+            }
+
+            if let blocks = message["content"] as? [[String: Any]] {
+                arrayContentMessageCount += 1
+                for block in blocks {
+                    let blockType = (block["type"] as? String)?.lowercased()
+                    switch blockType {
+                    case "text":
+                        textBlockCount += 1
+                    case "thinking":
+                        thinkingBlockCount += 1
+                        if block["signature"] is String {
+                            signedThinkingBlockCount += 1
+                        }
+                    case "redacted_thinking":
+                        redactedThinkingBlockCount += 1
+                    case "tool_use":
+                        toolUseBlockCount += 1
+                    case "tool_result":
+                        toolResultBlockCount += 1
+                    default:
+                        otherBlockCount += 1
+                    }
+                }
+            } else if message["content"] is String {
+                stringContentMessageCount += 1
+            }
+        }
+
+        return RequestStructureSummary(
+            bodyBytes: body.count,
+            messageCount: messages.count,
+            assistantMessageCount: assistantMessageCount,
+            arrayContentMessageCount: arrayContentMessageCount,
+            stringContentMessageCount: stringContentMessageCount,
+            textBlockCount: textBlockCount,
+            thinkingBlockCount: thinkingBlockCount,
+            signedThinkingBlockCount: signedThinkingBlockCount,
+            redactedThinkingBlockCount: redactedThinkingBlockCount,
+            toolUseBlockCount: toolUseBlockCount,
+            toolResultBlockCount: toolResultBlockCount,
+            otherBlockCount: otherBlockCount,
+            topLevelThinkingType: thinkingConfig?["type"] as? String,
+            topLevelThinkingBudget: thinkingConfig?["budget_tokens"] as? Int
+        )
+    }
+
+    private static func logProjectionDiagnostics(
+        requestID: String,
+        originalBody: Data,
+        preparedRequest: PreparedRequest
+    ) {
+        guard let original = summarizeRequestBody(originalBody),
+              let prepared = summarizeRequestBody(preparedRequest.bodyData) else {
+            return
+        }
+
+        let bodyDelta = prepared.bodyBytes - original.bodyBytes
+        let thinkingConfig = prepared.topLevelThinkingType ?? "none"
+        let budget = prepared.topLevelThinkingBudget.map(String.init) ?? "none"
+        AppLog.proxy.debug(
+            "[Proxy] [\(requestID)] ProjectionDiag: body=\(original.bodyBytes)→\(prepared.bodyBytes)B delta=\(bodyDelta) msgs=\(original.messageCount)→\(prepared.messageCount) assistant=\(original.assistantMessageCount)→\(prepared.assistantMessageCount) content[array/string]=\(original.arrayContentMessageCount)/\(original.stringContentMessageCount)→\(prepared.arrayContentMessageCount)/\(prepared.stringContentMessageCount) blocks[text/thinking/signed/redacted/tool_use/tool_result/other]=\(original.textBlockCount)/\(original.thinkingBlockCount)/\(original.signedThinkingBlockCount)/\(original.redactedThinkingBlockCount)/\(original.toolUseBlockCount)/\(original.toolResultBlockCount)/\(original.otherBlockCount)→\(prepared.textBlockCount)/\(prepared.thinkingBlockCount)/\(prepared.signedThinkingBlockCount)/\(prepared.redactedThinkingBlockCount)/\(prepared.toolUseBlockCount)/\(prepared.toolResultBlockCount)/\(prepared.otherBlockCount) thinking.config=\(thinkingConfig) budget=\(budget)"
+        )
+
+        if let context = preparedRequest.context {
+            let portableBytes = preparedRequest.projectedPortableMessagesData?.count ?? 0
+            AppLog.proxy.debug(
+                "[Proxy] [\(requestID)] ProjectionDiag: branch lineage=\(context.lineageKey) branch=\(context.branchKey) reused=\(context.reusedBranchHistory) reusedPortable=\(context.reusedPortableMessageCount) portableHashes=\(context.preparedPortableMessageHashes.count) portableBytes=\(portableBytes)"
+            )
+        }
+    }
+
+    private static func logCoordinatorDiagnostics(
+        requestID: String,
+        decision: BranchRequestAcquireDecision,
+        context: PreparedBranchContext
+    ) {
+        switch decision {
+        case .acquired(let lease):
+            AppLog.proxy.debug(
+                "[Proxy] [\(requestID)] CoordinatorDiag: action=acquired lineage=\(context.lineageKey) branch=\(context.branchKey) generation=\(lease.generation) hashes=\(context.preparedPortableMessageHashes.count)"
+            )
+        case .replay(_, let source):
+            AppLog.proxy.debug(
+                "[Proxy] [\(requestID)] CoordinatorDiag: action=replay sourceGeneration=\(source.generation) lineage=\(source.lineageKey) branch=\(source.branchKey) hashes=\(source.portableMessageHashes.count)"
+            )
+        case .waited(let source):
+            AppLog.proxy.debug(
+                "[Proxy] [\(requestID)] CoordinatorDiag: action=waited onGeneration=\(source.generation) lineage=\(source.lineageKey) branch=\(source.branchKey) sourceHashes=\(source.portableMessageHashes.count) targetHashes=\(context.preparedPortableMessageHashes.count)"
+            )
+        }
+    }
+
+    // MARK: - Thinking Diagnostics
+
+    /// Log structural metadata about thinking/signature blocks in the request body.
+    /// Only logs message indices, roles, block type counts, and signature presence — no content.
+    private static func logThinkingDiagnostics(body: Data, requestID: String) {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return }
+
+        // Log top-level thinking configuration.
+        if let thinking = json["thinking"] as? [String: Any] {
+            let thinkingType = thinking["type"] as? String ?? "?"
+            let budget = thinking["budget_tokens"] as? Int
+            let budgetStr = budget.map { String($0) } ?? "none"
+            AppLog.proxy.debug(
+                "[Proxy] [\(requestID)] ThinkingDiag: config thinking.type=\(thinkingType) budget=\(budgetStr)"
+            )
+        }
+
+        // Log per-message thinking block structure.
+        guard let messages = json["messages"] as? [[String: Any]] else { return }
+        for (index, message) in messages.enumerated() {
+            let role = message["role"] as? String ?? "?"
+
+            // content can be a string or an array of blocks.
+            guard let contentArray = message["content"] as? [[String: Any]] else { continue }
+
+            var thinkingCount = 0
+            var allHaveSignature = true
+            var anyHasSignature = false
+
+            for block in contentArray {
+                let blockType = block["type"] as? String ?? ""
+                if blockType == "thinking" {
+                    thinkingCount += 1
+                    if block["signature"] is String {
+                        anyHasSignature = true
+                    } else {
+                        allHaveSignature = false
+                    }
+                }
+            }
+
+            // Only log messages that contain thinking blocks.
+            guard thinkingCount > 0 else { continue }
+            let sigStatus: String
+            if allHaveSignature && anyHasSignature {
+                sigStatus = "all-signed"
+            } else if anyHasSignature {
+                sigStatus = "partial-signed"
+            } else {
+                sigStatus = "unsigned"
+            }
+            AppLog.proxy.debug(
+                "[Proxy] [\(requestID)] ThinkingDiag: msg[\(index)] role=\(role) blocks=\(contentArray.count) thinking=\(thinkingCount) sig=\(sigStatus)"
+            )
+        }
     }
 
     private static func extractAPIKey(from headers: HTTPHeaders) -> String {

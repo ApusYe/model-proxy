@@ -11,46 +11,6 @@ enum ResponseRelay {
     /// Token usage callback: (inputTokens, outputTokens).
     typealias UsageCallback = @Sendable (Int, Int) -> Void
 
-    struct ReplayCaptureState: Sendable, Equatable {
-        let maxBytes: Int
-        private(set) var totalBytes: Int = 0
-        private(set) var bodyChunks: [Data] = []
-        private(set) var isEnabled: Bool = true
-
-        init(maxBytes: Int = ResponseRelay.maxReplayBodyBytes) {
-            self.maxBytes = maxBytes
-        }
-
-        mutating func append(_ data: Data) -> Bool {
-            guard isEnabled else { return false }
-            let nextBytes = totalBytes + data.count
-            guard nextBytes <= maxBytes else {
-                disable()
-                return false
-            }
-            totalBytes = nextBytes
-            bodyChunks.append(data)
-            return true
-        }
-
-        mutating func replace(with data: Data) -> Bool {
-            guard isEnabled else { return false }
-            guard data.count <= maxBytes else {
-                disable()
-                return false
-            }
-            totalBytes = data.count
-            bodyChunks = [data]
-            return true
-        }
-
-        mutating func disable() {
-            isEnabled = false
-            totalBytes = 0
-            bodyChunks.removeAll(keepingCapacity: false)
-        }
-    }
-
     /// Relay an AsyncHTTPClient response (headers + body) back to a NIO client channel.
     /// Writes each body chunk immediately as it arrives — no buffering for SSE.
     /// - Parameter onUsage: optional closure invoked once with extracted token counts.
@@ -86,7 +46,7 @@ enum ResponseRelay {
         let shouldNormalize = branchContext != nil && portableNormalizer != nil && !isError
         let shouldCaptureReplay = branchLease != nil
         let replayHeaders = responseHead.headers.map { ($0.name, $0.value) }
-        var replayCapture = ReplayCaptureState()
+        var replayRecorder = BranchReplayRecorder(statusCode: statusCode, headers: replayHeaders)
         var replayOverflowLogged = false
 
         do {
@@ -105,14 +65,14 @@ enum ResponseRelay {
                     if let streamNormalizer {
                         let normalizedEvents = try streamNormalizer.push(chunk: chunk)
                         for eventData in normalizedEvents {
-                            if shouldCaptureReplay,
-                               !replayCapture.append(eventData),
-                               !replayOverflowLogged {
-                                replayOverflowLogged = true
-                                AppLog.proxy.warning(
-                                    "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B attemptedChunk=\(eventData.count)B status=\(statusCode)"
-                                )
-                            }
+                            Self.recordReplayChunk(
+                                eventData,
+                                shouldCaptureReplay: shouldCaptureReplay,
+                                requestID: requestID,
+                                statusCode: statusCode,
+                                replayRecorder: &replayRecorder,
+                                replayOverflowLogged: &replayOverflowLogged
+                            )
                             var out = channel.allocator.buffer(capacity: eventData.count)
                             out.writeBytes(eventData)
                             try await channel.writeAndFlush(
@@ -120,13 +80,14 @@ enum ResponseRelay {
                             ).get()
                         }
                     } else {
-                        if shouldCaptureReplay,
-                           let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes),
-                           !replayCapture.append(bytes),
-                           !replayOverflowLogged {
-                            replayOverflowLogged = true
-                            AppLog.proxy.warning(
-                                "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B attemptedChunk=\(bytes.count)B status=\(statusCode)"
+                        if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
+                            Self.recordReplayChunk(
+                                bytes,
+                                shouldCaptureReplay: shouldCaptureReplay,
+                                requestID: requestID,
+                                statusCode: statusCode,
+                                replayRecorder: &replayRecorder,
+                                replayOverflowLogged: &replayOverflowLogged
                             )
                         }
                         try await channel.writeAndFlush(
@@ -156,16 +117,14 @@ enum ResponseRelay {
                    let branchContext,
                    let lineageBroker,
                    let assistantTurn = try streamNormalizer.finish() {
-                    let shouldCommit = if let branchLease, let requestCoordinator {
-                        await requestCoordinator.shouldCommit(lease: branchLease)
-                    } else {
-                        true
-                    }
-                    if shouldCommit {
-                        try await lineageBroker.commitResponse(context: branchContext, assistantTurn: assistantTurn)
-                    } else {
-                        AppLog.proxy.debug("[Proxy] [\(requestID)] staleCommitDropped lineage=\(branchContext.lineageKey) branch=\(branchContext.branchKey) generation=\(branchLease?.generation ?? 0)")
-                    }
+                    await Self.commitAssistantTurnIfCurrent(
+                        assistantTurn,
+                        branchContext: branchContext,
+                        branchLease: branchLease,
+                        lineageBroker: lineageBroker,
+                        requestCoordinator: requestCoordinator,
+                        requestID: requestID
+                    )
                 }
             } else {
                 // 2b. Non-streaming: forward chunks immediately; accumulate a parallel copy
@@ -178,12 +137,14 @@ enum ResponseRelay {
                     if shouldAccumulate {
                         if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
                             bodyAccumulator.append(bytes)
-                            if shouldCaptureReplay && !shouldNormalize
-                                && !replayCapture.append(bytes)
-                                && !replayOverflowLogged {
-                                replayOverflowLogged = true
-                                AppLog.proxy.warning(
-                                    "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B attemptedChunk=\(bytes.count)B status=\(statusCode)"
+                            if !shouldNormalize {
+                                Self.recordReplayChunk(
+                                    bytes,
+                                    shouldCaptureReplay: shouldCaptureReplay,
+                                    requestID: requestID,
+                                    statusCode: statusCode,
+                                    replayRecorder: &replayRecorder,
+                                    replayOverflowLogged: &replayOverflowLogged
                                 )
                             }
                         }
@@ -210,30 +171,28 @@ enum ResponseRelay {
                    let branchContext,
                    let lineageBroker {
                     let normalized = try portableNormalizer.normalizeJSONBody(bodyAccumulator)
-                    if shouldCaptureReplay,
-                       !replayCapture.replace(with: normalized.bodyData),
-                       !replayOverflowLogged {
-                        replayOverflowLogged = true
-                        AppLog.proxy.warning(
-                            "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B normalizedBody=\(normalized.bodyData.count)B status=\(statusCode)"
-                        )
-                    }
+                    Self.replaceReplayBody(
+                        normalized.bodyData,
+                        shouldCaptureReplay: shouldCaptureReplay,
+                        requestID: requestID,
+                        statusCode: statusCode,
+                        replayRecorder: &replayRecorder,
+                        replayOverflowLogged: &replayOverflowLogged
+                    )
                     var out = channel.allocator.buffer(capacity: normalized.bodyData.count)
                     out.writeBytes(normalized.bodyData)
                     try await channel.writeAndFlush(
                         NIOAny(HTTPServerResponsePart.body(.byteBuffer(out)))
                     ).get()
                     if let assistantTurn = normalized.assistantTurn {
-                        let shouldCommit = if let branchLease, let requestCoordinator {
-                            await requestCoordinator.shouldCommit(lease: branchLease)
-                        } else {
-                            true
-                        }
-                        if shouldCommit {
-                            try await lineageBroker.commitResponse(context: branchContext, assistantTurn: assistantTurn)
-                        } else {
-                            AppLog.proxy.debug("[Proxy] [\(requestID)] staleCommitDropped lineage=\(branchContext.lineageKey) branch=\(branchContext.branchKey) generation=\(branchLease?.generation ?? 0)")
-                        }
+                        await Self.commitAssistantTurnIfCurrent(
+                            assistantTurn,
+                            branchContext: branchContext,
+                            branchLease: branchLease,
+                            lineageBroker: lineageBroker,
+                            requestCoordinator: requestCoordinator,
+                            requestID: requestID
+                        )
                     }
                 }
             }
@@ -248,14 +207,7 @@ enum ResponseRelay {
         }
 
         try? await channel.close().get()
-        if shouldCaptureReplay, replayCapture.isEnabled {
-            return ReplayableBranchResponse(
-                statusCode: statusCode,
-                headers: replayHeaders,
-                bodyChunks: replayCapture.bodyChunks
-            )
-        }
-        return nil
+        return shouldCaptureReplay ? replayRecorder.replayableResponse() : nil
     }
 
     static func replay(
@@ -361,5 +313,65 @@ enum ResponseRelay {
 
         guard input > 0 || output > 0 else { return nil }
         return (input, output)
+    }
+
+    private static func recordReplayChunk(
+        _ data: Data,
+        shouldCaptureReplay: Bool,
+        requestID: String,
+        statusCode: Int,
+        replayRecorder: inout BranchReplayRecorder,
+        replayOverflowLogged: inout Bool
+    ) {
+        guard shouldCaptureReplay else { return }
+        let attempt = replayRecorder.append(data)
+        if attempt.disabledByLimit && !replayOverflowLogged {
+            replayOverflowLogged = true
+            AppLog.proxy.warning(
+                "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B attemptedChunk=\(attempt.attemptedBytes)B status=\(statusCode)"
+            )
+        }
+    }
+
+    private static func replaceReplayBody(
+        _ data: Data,
+        shouldCaptureReplay: Bool,
+        requestID: String,
+        statusCode: Int,
+        replayRecorder: inout BranchReplayRecorder,
+        replayOverflowLogged: inout Bool
+    ) {
+        guard shouldCaptureReplay else { return }
+        let attempt = replayRecorder.replace(with: data)
+        if attempt.disabledByLimit && !replayOverflowLogged {
+            replayOverflowLogged = true
+            AppLog.proxy.warning(
+                "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B normalizedBody=\(attempt.attemptedBytes)B status=\(statusCode)"
+            )
+        }
+    }
+
+    private static func commitAssistantTurnIfCurrent(
+        _ assistantTurn: PortableAssistantTurn,
+        branchContext: PreparedBranchContext,
+        branchLease: BranchRequestLease?,
+        lineageBroker: any SessionLineageBrokering,
+        requestCoordinator: (any BranchRequestCoordinating)?,
+        requestID: String
+    ) async {
+        let shouldCommit = if let branchLease, let requestCoordinator {
+            await requestCoordinator.shouldCommit(lease: branchLease)
+        } else {
+            true
+        }
+        guard shouldCommit else {
+            AppLog.proxy.debug("[Proxy] [\(requestID)] staleCommitDropped lineage=\(branchContext.lineageKey) branch=\(branchContext.branchKey) generation=\(branchLease?.generation ?? 0)")
+            return
+        }
+        do {
+            try await lineageBroker.commitResponse(context: branchContext, assistantTurn: assistantTurn)
+        } catch {
+            AppLog.proxy.error("[Proxy] [\(requestID)] branchCommitFailed lineage=\(branchContext.lineageKey) branch=\(branchContext.branchKey) error=\(String(describing: error))")
+        }
     }
 }

@@ -6,16 +6,10 @@ protocol BranchRequestCoordinating: Actor, Sendable {
     func shouldCommit(lease: BranchRequestLease) async -> Bool
 }
 
-struct ReplayableBranchResponse: Sendable, Equatable {
+struct ReplayableBranchResponse: Sendable {
     let statusCode: Int
     let headers: [(String, String)]
     let bodyChunks: [Data]
-
-    static func == (lhs: ReplayableBranchResponse, rhs: ReplayableBranchResponse) -> Bool {
-        lhs.statusCode == rhs.statusCode
-        && lhs.headers.elementsEqual(rhs.headers, by: { $0.0 == $1.0 && $0.1 == $1.1 })
-        && lhs.bodyChunks == rhs.bodyChunks
-    }
 }
 
 struct BranchRequestLease: Sendable, Equatable {
@@ -28,13 +22,13 @@ struct BranchRequestLease: Sendable, Equatable {
     let generation: Int
 }
 
-enum BranchRequestAcquireDecision: Sendable, Equatable {
+enum BranchRequestAcquireDecision: Sendable {
     case acquired(BranchRequestLease)
     case replay(ReplayableBranchResponse, source: BranchRequestLease)
     case waited(on: BranchRequestLease)
 }
 
-private enum JoinedBranchRequestOutcome: Sendable, Equatable {
+private enum JoinedBranchRequestOutcome: Sendable {
     case replay(ReplayableBranchResponse)
     case retry
 }

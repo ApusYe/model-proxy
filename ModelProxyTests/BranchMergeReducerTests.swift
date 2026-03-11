@@ -3,6 +3,7 @@ import Foundation
 import NIOCore
 @testable import ModelProxy
 
+@Suite(.serialized)
 struct BranchMergeReducerTests {
 
     @Test func reducerRemovesThinkingAndSignatureFromPortableTurn() throws {
@@ -99,5 +100,46 @@ struct BranchMergeReducerTests {
         let blocks = try #require(portable["content"] as? [[String: Any]])
         #expect(blocks.count == 1)
         #expect(blocks.first?["text"] as? String == "Committed successfully")
+    }
+
+    @Test func sseNormalizerPassesMalformedJSONEventThroughWithoutThrowing() throws {
+        let normalizer = PortableContentNormalizer().makeSSEStreamNormalizer()
+        let allocator = ByteBufferAllocator()
+
+        let malformedEvent = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":\n\n"
+        var malformedBuffer = allocator.buffer(capacity: malformedEvent.utf8.count)
+        malformedBuffer.writeString(malformedEvent)
+        let malformedOutput = try normalizer.push(chunk: malformedBuffer)
+        let malformedText = String(data: malformedOutput.first ?? Data(), encoding: .utf8) ?? ""
+        #expect(malformedOutput.count == 1)
+        #expect(malformedText.contains("\"type\":\"content_block_delta\""))
+    }
+
+    @Test func sseNormalizerBuffersPartialEventUntilTerminatorArrives() throws {
+        let normalizer = PortableContentNormalizer().makeSSEStreamNormalizer()
+        let allocator = ByteBufferAllocator()
+        let partialStart = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}"
+        var firstBuffer = allocator.buffer(capacity: partialStart.utf8.count)
+        firstBuffer.writeString(partialStart)
+
+        let firstOutput = try normalizer.push(chunk: firstBuffer)
+        #expect(firstOutput.isEmpty)
+
+        var secondBuffer = allocator.buffer(capacity: 2)
+        secondBuffer.writeString("\n\n")
+        let secondOutput = try normalizer.push(chunk: secondBuffer)
+        #expect(secondOutput.count == 1)
+
+        let deltaEvent = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Buffered\"}}\n\n"
+        var deltaBuffer = allocator.buffer(capacity: deltaEvent.utf8.count)
+        deltaBuffer.writeString(deltaEvent)
+        _ = try normalizer.push(chunk: deltaBuffer)
+
+        let completedBufferedTurn = try normalizer.finish()
+        let assistantTurn = try #require(completedBufferedTurn)
+        let portableJSONObject = try JSONSerialization.jsonObject(with: assistantTurn.portableMessageData)
+        let portable = try #require(portableJSONObject as? [String: Any])
+        let blocks = try #require(portable["content"] as? [[String: Any]])
+        #expect(blocks.first?["text"] as? String == "Buffered")
     }
 }

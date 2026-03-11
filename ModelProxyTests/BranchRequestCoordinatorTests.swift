@@ -81,13 +81,37 @@ struct BranchRequestCoordinatorTests {
         #expect(await coordinator.shouldCommit(lease: firstLease) == false)
         #expect(await coordinator.shouldCommit(lease: secondLease) == true)
     }
+
+    @Test func samePortableHashesFromDifferentClientsDoNotBlockEachOther() async throws {
+        let coordinator = BranchRequestCoordinator()
+        let claudeContext = makeContext(clientName: "Claude Code", hashes: ["m1", "m2"])
+        let codexContext = makeContext(clientName: "Codex", hashes: ["m1", "m2"])
+
+        let claudeDecision = await coordinator.acquire(context: claudeContext)
+        let claudeLease = switch claudeDecision {
+        case .acquired(let lease): lease
+        default: Issue.record("Expected Claude lease acquisition"); throw TestAbort()
+        }
+
+        let codexDecision = await coordinator.acquire(context: codexContext)
+        let codexLease = switch codexDecision {
+        case .acquired(let lease): lease
+        default: Issue.record("Expected Codex lease acquisition"); throw TestAbort()
+        }
+
+        #expect(claudeLease.clientName != codexLease.clientName)
+        #expect(codexLease.generation == 1)
+
+        await coordinator.complete(lease: claudeLease, replay: nil)
+        await coordinator.complete(lease: codexLease, replay: nil)
+    }
 }
 
-private func makeContext(hashes: [String]) -> PreparedBranchContext {
+private func makeContext(clientName: String = "Claude Code", hashes: [String]) -> PreparedBranchContext {
     PreparedBranchContext(
         lineageKey: "lineage-1",
         branchKey: "branch-1",
-        clientName: "Claude Code",
+        clientName: clientName,
         vendorKey: "vendor-qwen",
         signingDomain: .compatibleThirdParty,
         replayPolicy: .portableOnly,

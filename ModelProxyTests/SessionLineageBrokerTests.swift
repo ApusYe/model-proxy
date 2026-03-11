@@ -174,4 +174,58 @@ struct SessionLineageBrokerTests {
         #expect(secondPrepared.context?.reusedBranchHistory == true)
         #expect(secondPrepared.context?.reusedPortableMessageCount == 2)
     }
+
+    @Test func brokerTrimsLineagesToMostRecentTwentyFourPerClient() async throws {
+        let broker = SessionLineageBroker()
+        let target = RoutingSnapshot.RouteTarget(
+            baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+            apiKey: "key",
+            vendorName: "Qwen",
+            vendorID: UUID(uuidString: "00000000-0000-0000-0000-0000000000B4"),
+            targetModel: "qwen3.5-plus",
+            isPassthrough: false,
+            connectTimeoutSeconds: 10,
+            readTimeoutSeconds: 120,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .portableOnly
+        )
+
+        for index in 0..<25 {
+            let request = try JSONSerialization.data(withJSONObject: [
+                "model": "claude-haiku-4-5-20251001",
+                "messages": [["role": "user", "content": "Task \(index)"]]
+            ], options: [.sortedKeys])
+
+            let prepared = try await broker.prepareRequest(
+                bodyData: request,
+                clientName: "Claude Code",
+                target: target
+            )
+            let context = try #require(prepared.context)
+            try await broker.commitResponse(
+                context: context,
+                assistantTurn: PortableAssistantTurn(
+                    fullMessageData: try JSONSerialization.data(withJSONObject: [
+                        "role": "assistant",
+                        "content": [["type": "text", "text": "done \(index)"]]
+                    ], options: [.sortedKeys]),
+                    portableMessageData: try JSONSerialization.data(withJSONObject: [
+                        "role": "assistant",
+                        "content": [["type": "text", "text": "done \(index)"]]
+                    ], options: [.sortedKeys])
+                )
+            )
+        }
+
+        let branches = await broker.branches(for: "Claude Code")
+        #expect(branches.count == 24)
+        let portableTexts = try branches.map { branch in
+            let messages = try TranscriptProjector.decodeMessagesData(branch.portableMessagesData)
+            let assistant = try #require(messages.last)
+            let blocks = try #require(assistant["content"] as? [[String: Any]])
+            return blocks.first?["text"] as? String
+        }
+        #expect(!portableTexts.contains("done 0"))
+        #expect(portableTexts.contains("done 24"))
+    }
 }

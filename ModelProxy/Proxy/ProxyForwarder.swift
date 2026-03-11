@@ -7,6 +7,21 @@ import OSLog
 
 /// Async forwarding logic, called from a Task inside ProxyChannelHandler.
 enum ProxyForwarder {
+    static let maxBranchWaitAttempts = 3
+
+    struct BranchWaitBudget: Sendable, Equatable {
+        let maxAttempts: Int
+        private(set) var attempts: Int = 0
+
+        init(maxAttempts: Int = ProxyForwarder.maxBranchWaitAttempts) {
+            self.maxAttempts = maxAttempts
+        }
+
+        mutating func recordWait() -> Bool {
+            attempts += 1
+            return attempts <= maxAttempts
+        }
+    }
 
     static func forward(
         clientName: String,
@@ -94,6 +109,7 @@ enum ProxyForwarder {
 
         var preparedRequest = initialPreparedRequest
         var branchLease: BranchRequestLease?
+        var waitBudget = BranchWaitBudget()
         while let context = preparedRequest.context {
             let decision = await requestCoordinator.acquire(context: context)
             if debugEnabled {
@@ -122,6 +138,18 @@ enum ProxyForwarder {
                 await MainActor.run { trafficLog.append(entry) }
                 return
             case .waited:
+                let shouldContinue = waitBudget.recordWait()
+                if !shouldContinue {
+                    AppLog.proxy.error(
+                        "[Proxy] [\(requestID)] CoordinatorDiag: action=aborted reason=max_wait_attempts limit=\(waitBudget.maxAttempts) lineage=\(context.lineageKey) branch=\(context.branchKey) hashes=\(context.preparedPortableMessageHashes.count)"
+                    )
+                    await Self.sendError(
+                        channel: channel,
+                        status: .conflict,
+                        message: "Branch request coordination exceeded max wait attempts (\(waitBudget.maxAttempts))"
+                    )
+                    return
+                }
                 do {
                     preparedRequest = try await lineageBroker.prepareRequest(
                         bodyData: originalBodyData,

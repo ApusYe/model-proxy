@@ -119,7 +119,8 @@ final class PortableSSEStreamNormalizer {
             return eventData
         }
 
-        guard var json = try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(payload.utf8)),
+              var json = object as? [String: Any] else {
             return eventData
         }
 

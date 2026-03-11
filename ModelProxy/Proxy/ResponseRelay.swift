@@ -6,9 +6,50 @@ import AsyncHTTPClient
 import OSLog
 
 enum ResponseRelay {
+    static let maxReplayBodyBytes = 1 * 1024 * 1024
 
     /// Token usage callback: (inputTokens, outputTokens).
     typealias UsageCallback = @Sendable (Int, Int) -> Void
+
+    struct ReplayCaptureState: Sendable, Equatable {
+        let maxBytes: Int
+        private(set) var totalBytes: Int = 0
+        private(set) var bodyChunks: [Data] = []
+        private(set) var isEnabled: Bool = true
+
+        init(maxBytes: Int = ResponseRelay.maxReplayBodyBytes) {
+            self.maxBytes = maxBytes
+        }
+
+        mutating func append(_ data: Data) -> Bool {
+            guard isEnabled else { return false }
+            let nextBytes = totalBytes + data.count
+            guard nextBytes <= maxBytes else {
+                disable()
+                return false
+            }
+            totalBytes = nextBytes
+            bodyChunks.append(data)
+            return true
+        }
+
+        mutating func replace(with data: Data) -> Bool {
+            guard isEnabled else { return false }
+            guard data.count <= maxBytes else {
+                disable()
+                return false
+            }
+            totalBytes = data.count
+            bodyChunks = [data]
+            return true
+        }
+
+        mutating func disable() {
+            isEnabled = false
+            totalBytes = 0
+            bodyChunks.removeAll(keepingCapacity: false)
+        }
+    }
 
     /// Relay an AsyncHTTPClient response (headers + body) back to a NIO client channel.
     /// Writes each body chunk immediately as it arrives — no buffering for SSE.
@@ -45,7 +86,8 @@ enum ResponseRelay {
         let shouldNormalize = branchContext != nil && portableNormalizer != nil && !isError
         let shouldCaptureReplay = branchLease != nil
         let replayHeaders = responseHead.headers.map { ($0.name, $0.value) }
-        var replayChunks: [Data] = []
+        var replayCapture = ReplayCaptureState()
+        var replayOverflowLogged = false
 
         do {
             try await channel.writeAndFlush(
@@ -63,8 +105,13 @@ enum ResponseRelay {
                     if let streamNormalizer {
                         let normalizedEvents = try streamNormalizer.push(chunk: chunk)
                         for eventData in normalizedEvents {
-                            if shouldCaptureReplay {
-                                replayChunks.append(eventData)
+                            if shouldCaptureReplay,
+                               !replayCapture.append(eventData),
+                               !replayOverflowLogged {
+                                replayOverflowLogged = true
+                                AppLog.proxy.warning(
+                                    "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B attemptedChunk=\(eventData.count)B status=\(statusCode)"
+                                )
                             }
                             var out = channel.allocator.buffer(capacity: eventData.count)
                             out.writeBytes(eventData)
@@ -74,8 +121,13 @@ enum ResponseRelay {
                         }
                     } else {
                         if shouldCaptureReplay,
-                           let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
-                            replayChunks.append(bytes)
+                           let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes),
+                           !replayCapture.append(bytes),
+                           !replayOverflowLogged {
+                            replayOverflowLogged = true
+                            AppLog.proxy.warning(
+                                "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B attemptedChunk=\(bytes.count)B status=\(statusCode)"
+                            )
                         }
                         try await channel.writeAndFlush(
                             NIOAny(HTTPServerResponsePart.body(.byteBuffer(chunk)))
@@ -126,8 +178,13 @@ enum ResponseRelay {
                     if shouldAccumulate {
                         if let bytes = chunk.getData(at: chunk.readerIndex, length: chunk.readableBytes) {
                             bodyAccumulator.append(bytes)
-                            if shouldCaptureReplay && !shouldNormalize {
-                                replayChunks.append(bytes)
+                            if shouldCaptureReplay && !shouldNormalize
+                                && !replayCapture.append(bytes)
+                                && !replayOverflowLogged {
+                                replayOverflowLogged = true
+                                AppLog.proxy.warning(
+                                    "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B attemptedChunk=\(bytes.count)B status=\(statusCode)"
+                                )
                             }
                         }
                     }
@@ -153,8 +210,13 @@ enum ResponseRelay {
                    let branchContext,
                    let lineageBroker {
                     let normalized = try portableNormalizer.normalizeJSONBody(bodyAccumulator)
-                    if shouldCaptureReplay {
-                        replayChunks = [normalized.bodyData]
+                    if shouldCaptureReplay,
+                       !replayCapture.replace(with: normalized.bodyData),
+                       !replayOverflowLogged {
+                        replayOverflowLogged = true
+                        AppLog.proxy.warning(
+                            "[Proxy] [\(requestID)] ReplayDiag: action=disabled reason=size_limit limit=\(Self.maxReplayBodyBytes)B normalizedBody=\(normalized.bodyData.count)B status=\(statusCode)"
+                        )
                     }
                     var out = channel.allocator.buffer(capacity: normalized.bodyData.count)
                     out.writeBytes(normalized.bodyData)
@@ -186,11 +248,11 @@ enum ResponseRelay {
         }
 
         try? await channel.close().get()
-        if shouldCaptureReplay {
+        if shouldCaptureReplay, replayCapture.isEnabled {
             return ReplayableBranchResponse(
                 statusCode: statusCode,
                 headers: replayHeaders,
-                bodyChunks: replayChunks
+                bodyChunks: replayCapture.bodyChunks
             )
         }
         return nil

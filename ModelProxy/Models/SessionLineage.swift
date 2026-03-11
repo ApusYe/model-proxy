@@ -1,6 +1,6 @@
 import Foundation
 
-struct BranchTranscript: Sendable {
+struct BranchTranscript: Codable, Sendable {
     let lineageKey: String
     let branchKey: String
     let clientName: String
@@ -13,7 +13,7 @@ struct BranchTranscript: Sendable {
     var lastUpdatedAt: Date
 }
 
-struct ConversationLineage: Sendable {
+struct ConversationLineage: Codable, Sendable {
     let lineageKey: String
     let clientName: String
     var branches: [String: BranchTranscript]

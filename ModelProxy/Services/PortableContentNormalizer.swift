@@ -78,6 +78,7 @@ final class PortableSSEStreamNormalizer {
     }
 
     func finish() throws -> PortableAssistantTurn? {
+        defer { resetState() }
         if !bufferedData.isEmpty, let normalized = try normalizeEvent(bufferedData) {
             bufferedData = Data()
             if normalized.isEmpty {
@@ -203,6 +204,14 @@ final class PortableSSEStreamNormalizer {
 
     private func orderedBlocks(from indexedBlocks: [Int: [String: Any]]) -> [[String: Any]] {
         indexedBlocks.keys.sorted().compactMap { indexedBlocks[$0] }
+    }
+
+    private func resetState() {
+        bufferedData = Data()
+        activeBlocks.removeAll(keepingCapacity: false)
+        visibleIndexMap.removeAll(keepingCapacity: false)
+        fullBlocksByIndex.removeAll(keepingCapacity: false)
+        nextVisibleIndex = 0
     }
 
     private func encodeEvent(name: String?, json: [String: Any]) throws -> Data {

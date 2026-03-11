@@ -19,6 +19,10 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
     var compatibleClientID: UUID?
     /// Vendor model IDs available for quick selection in routing forms.
     var supportedModels: [String]
+    /// Which signing domain this vendor belongs to for transcript replay compatibility.
+    var signingDomain: SigningDomain
+    /// Whether requests to this vendor should preserve raw replay-sensitive transcript blocks.
+    var replayPolicy: TranscriptReplayPolicy
 
     init(
         id: UUID = UUID(),
@@ -28,8 +32,11 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         connectTimeoutSeconds: Int = 10,
         readTimeoutSeconds: Int = 120,
         compatibleClientID: UUID? = nil,
-        supportedModels: [String] = []
+        supportedModels: [String] = [],
+        signingDomain: SigningDomain? = nil,
+        replayPolicy: TranscriptReplayPolicy? = nil
     ) {
+        let resolvedSigningDomain = signingDomain ?? SigningDomain.infer(fromBaseURL: baseURL)
         self.id = id
         self.name = name
         self.baseURL = baseURL
@@ -38,6 +45,8 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         self.readTimeoutSeconds = readTimeoutSeconds
         self.compatibleClientID = compatibleClientID
         self.supportedModels = supportedModels
+        self.signingDomain = resolvedSigningDomain
+        self.replayPolicy = replayPolicy ?? TranscriptReplayPolicy.defaultPolicy(for: resolvedSigningDomain)
     }
 
     // MARK: - Codable (legacy-tolerant)
@@ -47,6 +56,8 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         case connectTimeoutSeconds, readTimeoutSeconds
         case compatibleClientID
         case supportedModels
+        case signingDomain
+        case replayPolicy
     }
 
     init(from decoder: Decoder) throws {
@@ -59,5 +70,10 @@ struct Vendor: Identifiable, Codable, Equatable, Sendable {
         readTimeoutSeconds = (try? c.decode(Int.self, forKey: .readTimeoutSeconds)) ?? 120
         compatibleClientID = try? c.decode(UUID.self, forKey: .compatibleClientID)
         supportedModels = (try? c.decode([String].self, forKey: .supportedModels)) ?? []
+        let resolvedSigningDomain = (try? c.decode(SigningDomain.self, forKey: .signingDomain))
+            ?? SigningDomain.infer(fromBaseURL: baseURL)
+        signingDomain = resolvedSigningDomain
+        replayPolicy = (try? c.decode(TranscriptReplayPolicy.self, forKey: .replayPolicy))
+            ?? TranscriptReplayPolicy.defaultPolicy(for: resolvedSigningDomain)
     }
 }

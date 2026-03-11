@@ -61,6 +61,8 @@ struct BranchReplayRecorder: Sendable {
     }
 
     private mutating func disable() {
+        // Once replay capture exceeds the configured limit we keep the recorder disabled for the
+        // rest of the response; re-enabling mid-stream would produce a partial cached replay.
         isEnabled = false
         totalBytes = 0
         bodyChunks.removeAll(keepingCapacity: false)

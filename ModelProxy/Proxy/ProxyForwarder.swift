@@ -120,6 +120,8 @@ enum ProxyForwarder {
                 branchLease = lease
                 break
             case .replay(let cachedResponse, _):
+                // This path never owns a lease; the leader completed the in-flight entry and handed
+                // followers a cached response directly.
                 await ResponseRelay.replay(
                     cachedResponse: cachedResponse,
                     to: channel,
@@ -138,6 +140,8 @@ enum ProxyForwarder {
                 await MainActor.run { trafficLog.append(entry) }
                 return
             case .waited:
+                // This path also does not own a lease. It only waits for the leader to finish, then
+                // reprojection decides whether committed branch history can be reused.
                 let shouldContinue = waitBudget.recordWait()
                 if !shouldContinue {
                     AppLog.proxy.error(

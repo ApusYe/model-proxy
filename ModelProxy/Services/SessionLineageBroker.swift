@@ -19,15 +19,19 @@ protocol SessionLineageBrokering: Actor, Sendable {
 actor SessionLineageBroker: SessionLineageBrokering {
     private let projector: any TranscriptProjecting
     private let fingerprint: any ConversationFingerprinting
-    private var lineages: [String: ConversationLineage] = [:]
+    private let store: any LineageStoring
+    private var lineages: [String: ConversationLineage]
     private let maxCachedLineagesPerClient = 24
 
     init(
         projector: any TranscriptProjecting = TranscriptProjector(),
-        fingerprint: any ConversationFingerprinting = ConversationFingerprint()
+        fingerprint: any ConversationFingerprinting = ConversationFingerprint(),
+        store: any LineageStoring = LineageStoreFactory.makeDefaultStore()
     ) {
         self.projector = projector
         self.fingerprint = fingerprint
+        self.store = store
+        self.lineages = (try? store.loadLineages()) ?? [:]
     }
 
     func prepareRequest(
@@ -85,6 +89,7 @@ actor SessionLineageBroker: SessionLineageBrokering {
         lineage.lastUpdatedAt = .now
         lineages[context.lineageKey] = lineage
         trimLineages(for: context.clientName)
+        try store.saveLineages(lineages)
     }
 
     func branches(for clientName: String) -> [BranchTranscript] {

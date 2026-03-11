@@ -32,7 +32,7 @@ final class ProxyServer {
 
     init(
         tokenStatsStore: TokenStatsStore,
-        lineageBroker: any SessionLineageBrokering = SessionLineageBroker(),
+        lineageBroker: any SessionLineageBrokering = SessionLineageBroker(store: LineageStoreFactory.makeDefaultStore()),
         portableNormalizer: any PortableContentNormalizing = PortableContentNormalizer(),
         requestCoordinator: any BranchRequestCoordinating = BranchRequestCoordinator()
     ) {

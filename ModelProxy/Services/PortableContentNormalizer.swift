@@ -54,7 +54,7 @@ final class PortableSSEStreamNormalizer {
     private var activeBlocks: [Int: SSEContentBlockBuilder] = [:]
     private var visibleIndexMap: [Int: Int] = [:]
     private var nextVisibleIndex = 0
-    private var fullBlocksByIndex: [Int: Any] = [:]
+    private var fullBlocksByIndex: [Int: [String: Any]] = [:]
 
     nonisolated init(reducer: any BranchMergeReducing) {
         self.reducer = reducer
@@ -201,7 +201,7 @@ final class PortableSSEStreamNormalizer {
         }
     }
 
-    private func orderedBlocks(from indexedBlocks: [Int: Any]) -> [Any] {
+    private func orderedBlocks(from indexedBlocks: [Int: [String: Any]]) -> [[String: Any]] {
         indexedBlocks.keys.sorted().compactMap { indexedBlocks[$0] }
     }
 

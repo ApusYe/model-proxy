@@ -7,7 +7,7 @@ import NIOCore
 struct SessionLineageBrokerTests {
 
     @Test func brokerStoresVendorLocalAssistantTurnForNextBranchRequest() async throws {
-        let broker = SessionLineageBroker()
+        let broker = makeBroker()
         let target = RoutingSnapshot.RouteTarget(
             baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
             apiKey: "key",
@@ -73,7 +73,7 @@ struct SessionLineageBrokerTests {
     }
 
     @Test func brokerScopesBranchCacheByClientName() async throws {
-        let broker = SessionLineageBroker()
+        let broker = makeBroker()
         let target = RoutingSnapshot.RouteTarget(
             baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
             apiKey: "key",
@@ -113,7 +113,7 @@ struct SessionLineageBrokerTests {
     }
 
     @Test func brokerReusesBranchAfterSSECommitWithoutContentBlockStop() async throws {
-        let broker = SessionLineageBroker()
+        let broker = makeBroker()
         let normalizer = PortableContentNormalizer().makeSSEStreamNormalizer()
         let allocator = ByteBufferAllocator()
         let target = RoutingSnapshot.RouteTarget(
@@ -176,7 +176,10 @@ struct SessionLineageBrokerTests {
     }
 
     @Test func brokerTrimsLineagesToMostRecentTwentyFourPerClient() async throws {
-        let broker = SessionLineageBroker()
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("lineages.json", isDirectory: false)
+        let broker = SessionLineageBroker(store: FileLineageStore(fileURL: storeURL))
         let target = RoutingSnapshot.RouteTarget(
             baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
             apiKey: "key",
@@ -227,5 +230,90 @@ struct SessionLineageBrokerTests {
         }
         #expect(!portableTexts.contains("done 0"))
         #expect(portableTexts.contains("done 24"))
+
+        let persisted = try FileLineageStore(fileURL: storeURL).loadLineages()
+        let persistedBranches = persisted.values
+            .filter { $0.clientName == "Claude Code" }
+            .flatMap(\.branches.values)
+        #expect(persistedBranches.count == 24)
     }
+
+    @Test func brokerReloadsCommittedBranchHistoryFromPersistentStore() async throws {
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("lineages.json", isDirectory: false)
+        let store = FileLineageStore(fileURL: storeURL)
+        let target = RoutingSnapshot.RouteTarget(
+            baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+            apiKey: "key",
+            vendorName: "Qwen",
+            vendorID: UUID(uuidString: "00000000-0000-0000-0000-0000000000B5"),
+            targetModel: "qwen3.5-plus",
+            isPassthrough: false,
+            connectTimeoutSeconds: 10,
+            readTimeoutSeconds: 120,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .portableOnly
+        )
+
+        let initialBroker = SessionLineageBroker(store: store)
+        let firstRequest = try JSONSerialization.data(withJSONObject: [
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [["role": "user", "content": "Inspect the diff"]]
+        ], options: [.sortedKeys])
+
+        let prepared = try await initialBroker.prepareRequest(
+            bodyData: firstRequest,
+            clientName: "Claude Code",
+            target: target
+        )
+        let context = try #require(prepared.context)
+        try await initialBroker.commitResponse(
+            context: context,
+            assistantTurn: PortableAssistantTurn(
+                fullMessageData: try JSONSerialization.data(withJSONObject: [
+                    "role": "assistant",
+                    "content": [
+                        ["type": "thinking", "thinking": "private branch reasoning", "signature": "persisted_sig"],
+                        ["type": "text", "text": "I inspected the diff"]
+                    ]
+                ], options: [.sortedKeys]),
+                portableMessageData: try JSONSerialization.data(withJSONObject: [
+                    "role": "assistant",
+                    "content": [["type": "text", "text": "I inspected the diff"]]
+                ], options: [.sortedKeys])
+            )
+        )
+
+        let restartedBroker = SessionLineageBroker(store: store)
+        let secondRequest = try JSONSerialization.data(withJSONObject: [
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [
+                ["role": "user", "content": "Inspect the diff"],
+                ["role": "assistant", "content": [["type": "text", "text": "I inspected the diff"]]],
+                ["role": "user", "content": "Write the commit message"]
+            ]
+        ], options: [.sortedKeys])
+
+        let secondPrepared = try await restartedBroker.prepareRequest(
+            bodyData: secondRequest,
+            clientName: "Claude Code",
+            target: target
+        )
+
+        #expect(secondPrepared.context?.reusedBranchHistory == true)
+        #expect(secondPrepared.context?.reusedPortableMessageCount == 2)
+
+        let json = try #require(try JSONSerialization.jsonObject(with: secondPrepared.bodyData) as? [String: Any])
+        let messages = try #require(json["messages"] as? [[String: Any]])
+        let restoredBlocks = try #require(messages[1]["content"] as? [[String: Any]])
+        #expect(restoredBlocks.first?["signature"] as? String == "persisted_sig")
+    }
+}
+
+private func makeBroker() -> SessionLineageBroker {
+    let storeURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        .appendingPathComponent("lineages.json", isDirectory: false)
+    return SessionLineageBroker(store: FileLineageStore(fileURL: storeURL))
 }

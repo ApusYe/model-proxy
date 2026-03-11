@@ -27,7 +27,15 @@ struct BranchRequestCoordinatorTests {
         await coordinator.complete(lease: leaderLease, replay: replay)
 
         let followerDecision = await followerTask.value
-        #expect(followerDecision == .replay(replay, source: leaderLease))
+        switch followerDecision {
+        case .replay(let cachedResponse, let source):
+            #expect(source == leaderLease)
+            #expect(cachedResponse.statusCode == replay.statusCode)
+            #expect(cachedResponse.bodyChunks == replay.bodyChunks)
+            #expect(cachedResponse.headers.contains { $0.0 == "content-type" && $0.1 == "application/json" })
+        default:
+            Issue.record("Expected replay decision"); throw TestAbort()
+        }
     }
 
     @Test func successorRequestWaitsThenAcquiresNewGeneration() async throws {
@@ -49,7 +57,12 @@ struct BranchRequestCoordinatorTests {
         await coordinator.complete(lease: leaderLease, replay: nil)
 
         let waitedDecision = await successorTask.value
-        #expect(waitedDecision == .waited(on: leaderLease))
+        switch waitedDecision {
+        case .waited(let source):
+            #expect(source == leaderLease)
+        default:
+            Issue.record("Expected waited decision"); throw TestAbort()
+        }
 
         let successorDecision = await coordinator.acquire(context: successorContext)
         let successorLease = switch successorDecision {
@@ -104,6 +117,41 @@ struct BranchRequestCoordinatorTests {
 
         await coordinator.complete(lease: claudeLease, replay: nil)
         await coordinator.complete(lease: codexLease, replay: nil)
+    }
+
+    @Test func replayResponseHeadersCanBeAssertedWithoutOrderSensitivity() async throws {
+        let coordinator = BranchRequestCoordinator()
+        let context = makeContext(hashes: ["m1"])
+
+        let firstDecision = await coordinator.acquire(context: context)
+        let leaderLease = switch firstDecision {
+        case .acquired(let lease): lease
+        default: Issue.record("Expected first lease acquisition"); throw TestAbort()
+        }
+
+        let followerTask = Task {
+            await coordinator.acquire(context: context)
+        }
+        await Task.yield()
+
+        let replay = ReplayableBranchResponse(
+            statusCode: 200,
+            headers: [("x-request-id", "123"), ("content-type", "application/json")],
+            bodyChunks: [Data("{}".utf8)]
+        )
+        await coordinator.complete(lease: leaderLease, replay: replay)
+
+        let followerDecision = await followerTask.value
+        switch followerDecision {
+        case .replay(let cachedResponse, _):
+            let headerMap = Dictionary(grouping: cachedResponse.headers, by: { $0.0.lowercased() }).mapValues { pairs in
+                pairs.map(\.1)
+            }
+            #expect(headerMap["content-type"] == ["application/json"])
+            #expect(headerMap["x-request-id"] == ["123"])
+        default:
+            Issue.record("Expected replay decision"); throw TestAbort()
+        }
     }
 }
 

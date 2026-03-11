@@ -6,7 +6,7 @@ import Foundation
 struct ProxySessionIntegrationTests {
 
     @Test func claudeCommitOnPortableVendorDoesNotPoisonMainAnthropicSession() async throws {
-        let broker = SessionLineageBroker()
+        let broker = makeBroker()
         let normalizer = PortableContentNormalizer()
         let portableTarget = RoutingSnapshot.RouteTarget(
             baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
@@ -85,7 +85,7 @@ struct ProxySessionIntegrationTests {
     }
 
     @Test func codexForkRequestWithoutMessagesStaysTransparent() async throws {
-        let broker = SessionLineageBroker()
+        let broker = makeBroker()
         let target = RoutingSnapshot.RouteTarget(
             baseURL: "https://api.openai.com",
             apiKey: "key",
@@ -115,7 +115,7 @@ struct ProxySessionIntegrationTests {
     }
 
     @Test func sameSigningDomainReplayRemainsTransparentAcrossModelSwitch() async throws {
-        let broker = SessionLineageBroker()
+        let broker = makeBroker()
         let target = RoutingSnapshot.RouteTarget(
             baseURL: "https://api.anthropic.com",
             apiKey: "key",
@@ -145,7 +145,7 @@ struct ProxySessionIntegrationTests {
     }
 
     @Test func portableBranchSuccessorWaitsThenReusesCommittedVendorHistory() async throws {
-        let broker = SessionLineageBroker()
+        let broker = makeBroker()
         let coordinator = BranchRequestCoordinator()
         let target = RoutingSnapshot.RouteTarget(
             baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
@@ -213,7 +213,12 @@ struct ProxySessionIntegrationTests {
         await coordinator.complete(lease: firstLease, replay: nil)
 
         let waitedDecision = try await waitingTask.value
-        #expect(waitedDecision == .waited(on: firstLease))
+        switch waitedDecision {
+        case .waited(let source):
+            #expect(source == firstLease)
+        default:
+            Issue.record("Expected waited decision"); throw IntegrationTestAbort()
+        }
 
         let reprepared = try await broker.prepareRequest(
             bodyData: successorRequest,
@@ -226,3 +231,10 @@ struct ProxySessionIntegrationTests {
 }
 
 private struct IntegrationTestAbort: Error {}
+
+private func makeBroker() -> SessionLineageBroker {
+    let storeURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        .appendingPathComponent("lineages.json", isDirectory: false)
+    return SessionLineageBroker(store: FileLineageStore(fileURL: storeURL))
+}

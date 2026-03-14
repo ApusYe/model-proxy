@@ -177,6 +177,20 @@ enum ProxyForwarder {
             break
         }
 
+        if target.signingDomain.supportsAnthropicSignedReplay {
+            let sanitized = sanitizeAnthropicBodyIfNeeded(preparedRequest.bodyData)
+            preparedRequest = PreparedRequest(
+                bodyData: sanitized.bodyData,
+                context: preparedRequest.context,
+                projectedPortableMessagesData: preparedRequest.projectedPortableMessagesData
+            )
+            if sanitized.normalizedToolUseCount > 0 || sanitized.normalizedToolResultCount > 0 {
+                AppLog.proxy.warning(
+                    "[Proxy] [\(requestID)] ToolIDGuard: normalized outbound Anthropic transcript tool_use=\(sanitized.normalizedToolUseCount) tool_result=\(sanitized.normalizedToolResultCount)"
+                )
+            }
+        }
+
         // 4. Build and send upstream request.
         let (upstreamResponse, usedTarget) = await Self.executeWithFailover(
             head: head,
@@ -558,6 +572,40 @@ enum ProxyForwarder {
         }
 
         return Array(escaped.utf8)
+    }
+
+    struct AnthropicBodySanitizationResult: Sendable, Equatable {
+        let bodyData: Data
+        let normalizedToolUseCount: Int
+        let normalizedToolResultCount: Int
+    }
+
+    static func sanitizeAnthropicBodyIfNeeded(_ body: Data) -> AnthropicBodySanitizationResult {
+        guard var json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let messages = json["messages"] as? [[String: Any]] else {
+            return AnthropicBodySanitizationResult(
+                bodyData: body,
+                normalizedToolUseCount: 0,
+                normalizedToolResultCount: 0
+            )
+        }
+
+        let normalized = ToolUseIDNormalizer.normalizeMessages(messages)
+        guard normalized.changed else {
+            return AnthropicBodySanitizationResult(
+                bodyData: body,
+                normalizedToolUseCount: 0,
+                normalizedToolResultCount: 0
+            )
+        }
+
+        json["messages"] = normalized.messages
+        let normalizedBody = (try? TranscriptProjector.encodeJSONObject(json)) ?? body
+        return AnthropicBodySanitizationResult(
+            bodyData: normalizedBody,
+            normalizedToolUseCount: normalized.normalizedToolUseCount,
+            normalizedToolResultCount: normalized.normalizedToolResultCount
+        )
     }
 
     private static func containsJSONStringField(_ data: Data, field: String) -> Bool {

@@ -114,21 +114,23 @@ struct TranscriptProjector: TranscriptProjecting {
     }
 
     nonisolated static func makePortableMessages(from messages: [[String: Any]]) -> [[String: Any]] {
-        messages.compactMap(makePortableMessage(from:))
+        let normalized = ToolUseIDNormalizer.normalizeMessages(messages)
+        return normalized.messages.compactMap(makePortableMessage(from:))
     }
 
     nonisolated static func makePortableMessage(from message: [String: Any]) -> [String: Any]? {
-        guard let content = message["content"] else {
-            return message
+        let normalizedMessage = ToolUseIDNormalizer.normalizeMessage(message)
+        guard let content = normalizedMessage["content"] else {
+            return normalizedMessage
         }
         guard let blocks = content as? [Any] else {
-            return message
+            return normalizedMessage
         }
 
-        var portableMessage = message
+        var portableMessage = normalizedMessage
         let portableBlocks = makePortableBlocks(from: blocks)
 
-        if let role = message["role"] as? String, role == "assistant", portableBlocks.isEmpty {
+        if let role = normalizedMessage["role"] as? String, role == "assistant", portableBlocks.isEmpty {
             portableMessage["content"] = [["type": "text", "text": ""]]
         } else {
             portableMessage["content"] = portableBlocks

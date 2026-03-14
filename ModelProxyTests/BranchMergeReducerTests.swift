@@ -25,6 +25,56 @@ struct BranchMergeReducerTests {
         #expect(!blocks.contains { $0["type"] as? String == "thinking" })
     }
 
+    @Test func projectorNormalizesInvalidToolUseIDsAcrossMessages() throws {
+        let invalidID = "toolu bad/id"
+        let expectedID = ToolUseIDNormalizer.stableSafeID(for: invalidID)
+        let portableMessages = TranscriptProjector.makePortableMessages(from: [
+            [
+                "role": "assistant",
+                "content": [
+                    ["type": "tool_use", "id": invalidID, "name": "bash", "input": ["cmd": "pwd"]]
+                ]
+            ],
+            [
+                "role": "user",
+                "content": [
+                    ["type": "tool_result", "tool_use_id": invalidID, "content": "ok"]
+                ]
+            ]
+        ])
+
+        let assistantBlocks = try #require(portableMessages.first?["content"] as? [[String: Any]])
+        let userBlocks = try #require(portableMessages.last?["content"] as? [[String: Any]])
+        #expect(assistantBlocks.first?["id"] as? String == expectedID)
+        #expect(userBlocks.first?["tool_use_id"] as? String == expectedID)
+        #expect(ToolUseIDNormalizer.isValidToolID(expectedID))
+    }
+
+    @Test func jsonNormalizerNormalizesInvalidToolUseIdentifiers() throws {
+        let invalidID = "toolu bad/id"
+        let expectedID = ToolUseIDNormalizer.stableSafeID(for: invalidID)
+        let normalizer = PortableContentNormalizer()
+        let response = try JSONSerialization.data(withJSONObject: [
+            "id": "msg_1",
+            "role": "assistant",
+            "content": [
+                ["type": "tool_use", "id": invalidID, "name": "bash", "input": ["cmd": "git status"]],
+                ["type": "text", "text": "Running command"]
+            ]
+        ], options: [.sortedKeys])
+
+        let normalized = try normalizer.normalizeJSONBody(response)
+        let json = try #require(try JSONSerialization.jsonObject(with: normalized.bodyData) as? [String: Any])
+        let blocks = try #require(json["content"] as? [[String: Any]])
+        #expect(blocks.first?["id"] as? String == expectedID)
+
+        let assistantTurn = try #require(normalized.assistantTurn)
+        let portableJSONObject = try JSONSerialization.jsonObject(with: assistantTurn.portableMessageData)
+        let portable = try #require(portableJSONObject as? [String: Any])
+        let portableBlocks = try #require(portable["content"] as? [[String: Any]])
+        #expect(portableBlocks.first?["id"] as? String == expectedID)
+    }
+
     @Test func jsonNormalizerStripsReplaySensitiveBlocksFromResponse() throws {
         let normalizer = PortableContentNormalizer()
         let response = try JSONSerialization.data(withJSONObject: [
@@ -141,6 +191,35 @@ struct BranchMergeReducerTests {
         let portable = try #require(portableJSONObject as? [String: Any])
         let blocks = try #require(portable["content"] as? [[String: Any]])
         #expect(blocks.first?["text"] as? String == "Buffered")
+    }
+
+    @Test func sseNormalizerNormalizesInvalidToolUseIdentifiersInStreamAndPortableTurn() throws {
+        let invalidID = "toolu bad/id"
+        let expectedID = ToolUseIDNormalizer.stableSafeID(for: invalidID)
+        let normalizer = PortableContentNormalizer().makeSSEStreamNormalizer()
+        let allocator = ByteBufferAllocator()
+        let events = [
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"\(invalidID)\",\"name\":\"bash\",\"input\":{}}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+        ]
+
+        var output = Data()
+        for event in events {
+            var buffer = allocator.buffer(capacity: event.utf8.count)
+            buffer.writeString(event)
+            let normalizedEvents = try normalizer.push(chunk: buffer)
+            normalizedEvents.forEach { output.append($0) }
+        }
+
+        let text = String(data: output, encoding: .utf8) ?? ""
+        #expect(text.contains(expectedID))
+        #expect(!text.contains(invalidID))
+
+        let assistantTurn = try #require(try normalizer.finish())
+        let portableJSONObject = try JSONSerialization.jsonObject(with: assistantTurn.portableMessageData)
+        let portable = try #require(portableJSONObject as? [String: Any])
+        let blocks = try #require(portable["content"] as? [[String: Any]])
+        #expect(blocks.first?["id"] as? String == expectedID)
     }
 
     @Test func sseNormalizerFinishIsConsumptiveAndSecondFinishReturnsNil() throws {

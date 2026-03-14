@@ -143,8 +143,14 @@ final class PortableSSEStreamNormalizer {
             return try encodeEvent(name: eventName, json: json)
         }
 
-        activeBlocks[originalIndex] = SSEContentBlockBuilder(block: block)
-        if TranscriptProjector.isNonPortableBlock(block) {
+        let normalizedBlock = ToolUseIDNormalizer.normalizeMessage([
+            "role": "assistant",
+            "content": [block]
+        ])["content"] as? [[String: Any]]
+        let visibleBlock = normalizedBlock?.first ?? block
+
+        activeBlocks[originalIndex] = SSEContentBlockBuilder(block: visibleBlock)
+        if TranscriptProjector.isNonPortableBlock(visibleBlock) {
             return nil
         }
 
@@ -152,6 +158,7 @@ final class PortableSSEStreamNormalizer {
         nextVisibleIndex += 1
         visibleIndexMap[originalIndex] = visibleIndex
         json["index"] = visibleIndex
+        json["content_block"] = visibleBlock
         return try encodeEvent(name: eventName, json: json)
     }
 

@@ -210,6 +210,103 @@ struct ProxySessionIntegrationTests {
         #expect(reprepared.context?.reusedBranchHistory == true)
         #expect(reprepared.context?.reusedPortableMessageCount == 2)
     }
+
+    @Test func portableVendorToolUseIDsStayAnthropicSafeWhenReturningToMainSession() async throws {
+        let broker = makeBroker()
+        let normalizer = PortableContentNormalizer()
+        let portableTarget = RoutingSnapshot.RouteTarget(
+            baseURL: "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+            apiKey: "key",
+            vendorName: "Qwen",
+            vendorID: UUID(uuidString: "00000000-0000-0000-0000-0000000000C4"),
+            targetModel: "kimi-k2.5",
+            isPassthrough: false,
+            connectTimeoutSeconds: 10,
+            readTimeoutSeconds: 120,
+            signingDomain: .compatibleThirdParty,
+            replayPolicy: .portableOnly
+        )
+
+        let invalidID = "toolu bad/id"
+        let expectedID = ToolUseIDNormalizer.stableSafeID(for: invalidID)
+        let request = try JSONSerialization.data(withJSONObject: [
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [["role": "user", "content": "Run a tool"]]
+        ], options: [.sortedKeys])
+
+        let prepared = try await broker.prepareRequest(
+            bodyData: request,
+            clientName: "Claude Code",
+            target: portableTarget
+        )
+        let qwenResponse = try JSONSerialization.data(withJSONObject: [
+            "id": "msg_qwen",
+            "role": "assistant",
+            "content": [
+                ["type": "tool_use", "id": invalidID, "name": "bash", "input": ["cmd": "pwd"]],
+                ["type": "text", "text": "Tool requested"]
+            ]
+        ], options: [.sortedKeys])
+
+        let normalized = try normalizer.normalizeJSONBody(qwenResponse)
+        try await broker.commitResponse(
+            context: try #require(prepared.context),
+            assistantTurn: try #require(normalized.assistantTurn)
+        )
+
+        let portableReply = try #require(try JSONSerialization.jsonObject(with: normalized.bodyData) as? [String: Any])
+        let portableBlocks = try #require(portableReply["content"] as? [[String: Any]])
+        #expect(portableBlocks.first?["id"] as? String == expectedID)
+
+        let mainOpusRequest = try JSONSerialization.data(withJSONObject: [
+            "model": "claude-opus-4-6",
+            "thinking": ["type": "adaptive"],
+            "messages": [
+                ["role": "user", "content": "Run a tool"],
+                ["role": "assistant", "content": portableBlocks],
+                ["role": "user", "content": [
+                    ["type": "tool_result", "tool_use_id": expectedID, "content": "done"]
+                ]]
+            ]
+        ], options: [.sortedKeys])
+
+        let sanitized = ProxyForwarder.sanitizeAnthropicBodyIfNeeded(mainOpusRequest)
+        #expect(sanitized.normalizedToolUseCount == 0)
+        #expect(sanitized.normalizedToolResultCount == 0)
+        let sanitizedJSON = try #require(try JSONSerialization.jsonObject(with: sanitized.bodyData) as? [String: Any])
+        let messages = try #require(sanitizedJSON["messages"] as? [[String: Any]])
+        let assistantBlocks = try #require(messages[1]["content"] as? [[String: Any]])
+        let toolResultBlocks = try #require(messages[2]["content"] as? [[String: Any]])
+        #expect(assistantBlocks.first?["id"] as? String == expectedID)
+        #expect(toolResultBlocks.first?["tool_use_id"] as? String == expectedID)
+    }
+
+    @Test func anthropicOutboundGuardrailNormalizesLegacyInvalidToolIDs() throws {
+        let invalidID = "toolu bad/id"
+        let expectedID = ToolUseIDNormalizer.stableSafeID(for: invalidID)
+        let request = try JSONSerialization.data(withJSONObject: [
+            "model": "claude-opus-4-6",
+            "messages": [
+                ["role": "assistant", "content": [
+                    ["type": "tool_use", "id": invalidID, "name": "bash", "input": ["cmd": "pwd"]]
+                ]],
+                ["role": "user", "content": [
+                    ["type": "tool_result", "tool_use_id": invalidID, "content": "done"]
+                ]]
+            ]
+        ], options: [.sortedKeys])
+
+        let sanitized = ProxyForwarder.sanitizeAnthropicBodyIfNeeded(request)
+        #expect(sanitized.normalizedToolUseCount == 1)
+        #expect(sanitized.normalizedToolResultCount == 1)
+
+        let json = try #require(try JSONSerialization.jsonObject(with: sanitized.bodyData) as? [String: Any])
+        let messages = try #require(json["messages"] as? [[String: Any]])
+        let assistantBlocks = try #require(messages.first?["content"] as? [[String: Any]])
+        let userBlocks = try #require(messages.last?["content"] as? [[String: Any]])
+        #expect(assistantBlocks.first?["id"] as? String == expectedID)
+        #expect(userBlocks.first?["tool_use_id"] as? String == expectedID)
+    }
 }
 
 private struct IntegrationTestAbort: Error {}

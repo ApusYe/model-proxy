@@ -25,6 +25,5 @@ Packages/
 # Temp files
 /Screenshots
 /Icons
-
-# sense files
-.claude/notion-sync.local.md
+.claude/
+.plan/

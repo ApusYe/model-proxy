@@ -46,6 +46,11 @@ Global routing rules then map source model IDs such as `claude-haiku-4-5` to ven
 - API key replacement for routed requests
 - top-level `model` field replacement without rewriting the rest of the JSON body
 - streaming response relay
+- signing-domain aware transcript replay:
+  - `transparent` replay for Anthropic API / Bedrock / Vertex style routes
+  - `portableOnly` replay for third-party compatible vendors
+- vendor-local branch reuse for portable routes, so Claude Code / Codex sub-agent follow-up requests can resume on the same upstream transcript without poisoning the main Anthropic session
+- persisted committed branch transcripts across app restarts
 
 ### Desktop app
 
@@ -69,6 +74,7 @@ Global routing rules then map source model IDs such as `claude-haiku-4-5` to ven
 
 - in-memory traffic log
 - daily token usage persistence
+- persisted lineage cache for committed vendor-local branch transcripts
 - optional file-based debug logging with retention and compression
 - corrupt config reset detection on app launch
 
@@ -94,6 +100,8 @@ Claude Code / Codex
 
 For mapped requests, ModelProxy forwards the original request path to the chosen vendor base URL, swaps credentials, optionally swaps the model name, and relays the response back to the client.
 
+For vendors outside the Anthropic signing domain, ModelProxy no longer replays raw Claude thinking/signature history back and forth. Instead it projects the request into a portable transcript, keeps a vendor-local branch transcript for that route, and only merges portable assistant output back into the main session.
+
 ## Quick Start
 
 ### 1. Build and run
@@ -112,6 +120,7 @@ After launch, open the menu bar app and configure:
 
 - client ports and default upstreams in `Clients`
 - vendor base URLs, API keys, compatible client, timeouts, and supported model lists in `Vendors`
+- vendor signing domain and replay policy in `Vendors`
 - source-model to target-model rules in `Routing`
 
 ### 3. Point tools at the local listeners
@@ -168,7 +177,9 @@ Example shape:
       "apiKey": "sk-...",
       "connectTimeoutSeconds": 10,
       "readTimeoutSeconds": 120,
-      "supportedModels": ["qwen-plus", "qwen-max"]
+      "supportedModels": ["qwen-plus", "qwen-max"],
+      "signingDomain": "compatibleThirdParty",
+      "replayPolicy": "portableOnly"
     }
   ],
   "modelMappings": [
@@ -193,6 +204,7 @@ Example shape:
 ## Data Storage
 
 - config: `~/Library/Application Support/ModelProxy/config.json`
+- lineage cache: `~/Library/Application Support/ModelProxy/lineages.json`
 - token stats: `~/Library/Application Support/ModelProxy/token-stats-YYYY-MM-DD.json`
 - debug logs: `~/Library/Application Support/ModelProxy/logs/`
 
@@ -233,9 +245,9 @@ xcodebuild -project ModelProxy.xcodeproj \
 ```text
 ModelProxy/
   App/        app lifecycle, paths, logging
-  Models/     config, routing records, traffic, token stats
+  Models/     config, routing records, transcript replay domain, traffic, token stats
   Proxy/      server, router, forwarder, relay
-  Services/   config store, login item, debug log manager
+  Services/   config store, lineage broker, transcript projector, replay recorder, login item, debug log manager
   Views/      menu bar popover and settings tabs
 ```
 
@@ -246,6 +258,9 @@ Key files:
 - `ModelProxy/Proxy/ProxyServer.swift`
 - `ModelProxy/Proxy/RequestRouter.swift`
 - `ModelProxy/Proxy/ProxyForwarder.swift`
+- `ModelProxy/Proxy/ResponseRelay.swift`
+- `ModelProxy/Services/SessionLineageBroker.swift`
+- `ModelProxy/Services/TranscriptProjector.swift`
 - `ModelProxy/Views/StatusPopover.swift`
 - `ModelProxy/Views/SettingsView.swift`
 

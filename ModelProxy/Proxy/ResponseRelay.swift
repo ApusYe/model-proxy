@@ -33,7 +33,7 @@ enum ResponseRelay {
         )
         for (name, value) in upstreamResponse.headers {
             let lower = name.lowercased()
-            if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" { continue }
+            if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" || lower == "content-encoding" { continue }
             responseHead.headers.add(name: name, value: value)
         }
         responseHead.headers.add(name: "connection", value: "close")
@@ -221,7 +221,7 @@ enum ResponseRelay {
         )
         for (name, value) in cachedResponse.headers {
             let lower = name.lowercased()
-            if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" { continue }
+            if lower == "transfer-encoding" || lower == "connection" || lower == "content-length" || lower == "content-encoding" { continue }
             responseHead.headers.add(name: name, value: value)
         }
         responseHead.headers.add(name: "connection", value: "close")

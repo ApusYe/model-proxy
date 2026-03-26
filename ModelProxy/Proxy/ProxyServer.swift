@@ -3,6 +3,7 @@ import NIOCore
 import NIOPosix
 import NIOHTTP1
 import AsyncHTTPClient
+import NIOHTTPCompression
 import Observation
 import OSLog
 
@@ -67,7 +68,8 @@ final class ProxyServer {
 
         let clientConfig = HTTPClient.Configuration(
             redirectConfiguration: .disallow,
-            timeout: .init(connect: .seconds(10))
+            timeout: .init(connect: .seconds(10)),
+            decompression: .enabled(limit: .ratio(10))
         )
         let client = HTTPClient(eventLoopGroupProvider: .shared(group), configuration: clientConfig)
         self.httpClient = client

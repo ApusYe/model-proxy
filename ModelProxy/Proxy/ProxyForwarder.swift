@@ -367,9 +367,10 @@ enum ProxyForwarder {
         var upstreamHeaders = HTTPHeaders()
         for (name, value) in head.headers {
             let lower = name.lowercased()
-            if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "content-length" { continue }
+            if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "content-length" || lower == "accept-encoding" { continue }
             upstreamHeaders.add(name: name, value: value)
         }
+        upstreamHeaders.add(name: "Accept-Encoding", value: "gzip, deflate")
         if !target.isPassthrough {
             upstreamHeaders.remove(name: "authorization")
             upstreamHeaders.remove(name: "x-api-key")

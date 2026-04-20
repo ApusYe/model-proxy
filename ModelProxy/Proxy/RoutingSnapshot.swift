@@ -64,7 +64,9 @@ struct RoutingSnapshot: Sendable {
     init(from config: AppConfig, for clientConfig: ClientConfig) {
         var mappings: [String: [RouteTarget]] = [:]
         for mapping in config.modelMappings {
+            AppLog.proxy.info("[RoutingSnapshot] checking mapping \(mapping.sourceModel) targetVendorID=\(mapping.targetVendorID.uuidString) availableVendors=\(config.vendors.map { $0.id.uuidString }.joined(separator: ","))")
             guard let vendor = config.vendors.first(where: { $0.id == mapping.targetVendorID }) else {
+                AppLog.proxy.warning("[RoutingSnapshot] vendor not found for targetVendorID=\(mapping.targetVendorID.uuidString)")
                 continue
             }
             let primary = RouteTarget(
@@ -103,6 +105,7 @@ struct RoutingSnapshot: Sendable {
             mappings[mapping.sourceModel] = targets
         }
         self.modelMappings = mappings
+        AppLog.proxy.info("[RoutingSnapshot] built for '\(clientConfig.clientName)' port=\(clientConfig.port) mappings=\(mappings.count) vendors=\(config.vendors.count) sourceModels=\(mappings.keys.sorted().joined(separator: ","))")
         self.routeStates = [:]
         self.passthroughBaseURL = clientConfig.defaultUpstream
         self.unmappedPolicy = clientConfig.unmappedPolicy

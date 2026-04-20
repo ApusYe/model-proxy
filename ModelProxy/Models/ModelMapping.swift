@@ -41,7 +41,7 @@ struct ModelMapping: Identifiable, Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(UUID.self, forKey: .id)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
         sourceModel = try c.decode(String.self, forKey: .sourceModel)
         targetModel = try c.decode(String.self, forKey: .targetModel)
         targetVendorID = try c.decode(UUID.self, forKey: .targetVendorID)

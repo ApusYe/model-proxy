@@ -191,6 +191,16 @@ enum ProxyForwarder {
             }
         }
 
+        // Strip thinking/signature blocks for Kimi's Anthropic-compatible endpoint.
+        if target.baseURL.contains("kimi.com") {
+            let stripped = stripThinkingBlocks(from: preparedRequest.bodyData)
+            preparedRequest = PreparedRequest(
+                bodyData: stripped,
+                context: preparedRequest.context,
+                projectedPortableMessagesData: preparedRequest.projectedPortableMessagesData
+            )
+        }
+
         // 4. Build and send upstream request.
         let (upstreamResponse, usedTarget) = await Self.executeWithFailover(
             head: head,
@@ -607,6 +617,44 @@ enum ProxyForwarder {
             normalizedToolUseCount: normalized.normalizedToolUseCount,
             normalizedToolResultCount: normalized.normalizedToolResultCount
         )
+    }
+
+    /// Strip thinking/signature blocks and top-level thinking config for vendors that
+    /// claim Anthropic compatibility but reject signed thinking blocks.
+    static func stripThinkingBlocks(from data: Data) -> Data {
+        guard var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messages = json["messages"] as? [[String: Any]] else {
+            return data
+        }
+
+        let cleanedMessages = messages.map { message -> [String: Any] in
+            guard let content = message["content"] as? [[String: Any]] else { return message }
+            var newMessage = message
+
+            let cleanedContent = content.compactMap { block -> [String: Any]? in
+                let type = (block["type"] as? String)?.lowercased() ?? ""
+                if type == "thinking" || type == "redacted_thinking" || type.contains("reasoning") {
+                    return nil
+                }
+                var newBlock = block
+                newBlock.removeValue(forKey: "signature")
+                return newBlock
+            }
+
+            // Ensure assistant messages don't end up with empty content
+            if let role = message["role"] as? String, role == "assistant", cleanedContent.isEmpty {
+                newMessage["content"] = [["type": "text", "text": ""]]
+            } else {
+                newMessage["content"] = cleanedContent
+            }
+
+            return newMessage
+        }
+
+        json["messages"] = cleanedMessages
+        json.removeValue(forKey: "thinking")
+
+        return (try? TranscriptProjector.encodeJSONObject(json)) ?? data
     }
 
     private static func containsJSONStringField(_ data: Data, field: String) -> Bool {

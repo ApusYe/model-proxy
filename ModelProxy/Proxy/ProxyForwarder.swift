@@ -77,6 +77,9 @@ enum ProxyForwarder {
             "[Proxy] [\(requestID)] \(head.method.rawValue) \(head.uri) model=\(model) \(routeType) → \(target.baseURL) body=\(originalBodyData.count)B cl=\(originalCL) thinking=\(hasThinking) signature=\(hasSignature)"
         )
 
+        // DEBUG: verify stripThinkingBlocks condition
+        AppLog.proxy.info("[Proxy] [\(requestID)] DEBUG target.baseURL='\(target.baseURL)' containsKimi=\(target.baseURL.contains("kimi.com"))")
+
         // 3b. Diagnostic logging for thinking/signature investigation (debug mode only).
         if hasThinking || hasSignature {
             let debugEnabled = await MainActor.run { AppLogManager.shared.isEnabled }
@@ -191,15 +194,20 @@ enum ProxyForwarder {
             }
         }
 
-        // Strip thinking/signature blocks for Kimi's Anthropic-compatible endpoint.
-        if target.baseURL.contains("kimi.com") {
-            let stripped = stripThinkingBlocks(from: preparedRequest.bodyData)
-            preparedRequest = PreparedRequest(
-                bodyData: stripped,
-                context: preparedRequest.context,
-                projectedPortableMessagesData: preparedRequest.projectedPortableMessagesData
-            )
+        // Strip thinking/signature blocks before forwarding.
+        // Anthropic requires signature on thinking blocks; if signature is invalid
+        // (e.g. from a different OAuth session), the whole block must be removed.
+        // Kimi also rejects thinking blocks entirely.
+        let stripped = stripThinkingBlocks(from: preparedRequest.bodyData)
+        let delta = stripped.count - preparedRequest.bodyData.count
+        if delta != 0 {
+            AppLog.proxy.info("[Proxy] [\(requestID)] Stripped thinking blocks: bodyDelta=\(delta)B target=\(target.vendorName)")
         }
+        preparedRequest = PreparedRequest(
+            bodyData: stripped,
+            context: preparedRequest.context,
+            projectedPortableMessagesData: preparedRequest.projectedPortableMessagesData
+        )
 
         // 4. Build and send upstream request.
         let (upstreamResponse, usedTarget) = await Self.executeWithFailover(
@@ -375,9 +383,30 @@ enum ProxyForwarder {
 
         // Build headers.
         var upstreamHeaders = HTTPHeaders()
+        let bodyHasThinkingBlock = Self.bodyContainsThinkingBlock(bodyData)
+        AppLog.proxy.info("[Proxy] [\(requestID)] HeaderDebug bodyHasThinkingBlock=\(bodyHasThinkingBlock)")
         for (name, value) in head.headers {
             let lower = name.lowercased()
             if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "content-length" || lower == "accept-encoding" { continue }
+            // Strip thinking-related beta headers when thinking blocks were removed.
+            if lower.contains("beta"), !bodyHasThinkingBlock {
+                let originalBetas = value
+                let filtered = value
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { beta in
+                        let b = beta.lowercased()
+                        let keep = !b.contains("clear_thinking") && !b.contains("thinking")
+                        if !keep { AppLog.proxy.info("[Proxy] [\(requestID)] HeaderDebug removing beta: \(beta)") }
+                        return keep
+                    }
+                    .joined(separator: ", ")
+                AppLog.proxy.info("[Proxy] [\(requestID)] HeaderDebug \(name): original='\(originalBetas)' filtered='\(filtered)'")
+                if !filtered.isEmpty {
+                    upstreamHeaders.add(name: name, value: filtered)
+                }
+                continue
+            }
             upstreamHeaders.add(name: name, value: value)
         }
         upstreamHeaders.add(name: "Accept-Encoding", value: "gzip, deflate")
@@ -619,42 +648,91 @@ enum ProxyForwarder {
         )
     }
 
-    /// Strip thinking/signature blocks and top-level thinking config for vendors that
-    /// claim Anthropic compatibility but reject signed thinking blocks.
+    /// Completely remove thinking/reasoning blocks and strip signatures.
+    /// Thinking blocks carry session-bound signatures that cannot be reused across
+    /// sessions or vendors, so they are dropped rather than converted (which would
+    /// inflate input tokens and risk empty-text 400 errors).
+    /// Preserves top-level `thinking` config so Anthropic's conversation state remains
+    /// consistent. Truncates history to cap context-window usage.
     static func stripThinkingBlocks(from data: Data) -> Data {
         guard var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let messages = json["messages"] as? [[String: Any]] else {
+            AppLog.proxy.warning("[stripThinkingBlocks] JSON parse failed, returning original data")
             return data
         }
 
-        let cleanedMessages = messages.map { message -> [String: Any] in
+        var totalThinkingRemoved = 0
+        var totalSignatureRemoved = 0
+
+        let cleanedMessages: [[String: Any]] = messages.compactMap { message -> [String: Any]? in
             guard let content = message["content"] as? [[String: Any]] else { return message }
             var newMessage = message
 
             let cleanedContent = content.compactMap { block -> [String: Any]? in
                 let type = (block["type"] as? String)?.lowercased() ?? ""
                 if type == "thinking" || type == "redacted_thinking" || type.contains("reasoning") {
+                    totalThinkingRemoved += 1
                     return nil
                 }
+                // Strip signature from any remaining blocks (defensive)
                 var newBlock = block
-                newBlock.removeValue(forKey: "signature")
+                if newBlock.removeValue(forKey: "signature") != nil {
+                    totalSignatureRemoved += 1
+                }
                 return newBlock
             }
 
-            // Ensure assistant messages don't end up with empty content
+            // Drop assistant messages whose content became entirely empty after stripping.
             if let role = message["role"] as? String, role == "assistant", cleanedContent.isEmpty {
-                newMessage["content"] = [["type": "text", "text": ""]]
-            } else {
-                newMessage["content"] = cleanedContent
+                return nil
             }
 
+            newMessage["content"] = cleanedContent
             return newMessage
         }
 
-        json["messages"] = cleanedMessages
-        json.removeValue(forKey: "thinking")
+        // Truncate history to cap context-window usage.
+        let maxHistory = 24
+        let finalMessages: [[String: Any]]
+        if cleanedMessages.count > maxHistory {
+            let systemIdx = cleanedMessages.firstIndex { ($0["role"] as? String) == "system" }
+            let startIdx = cleanedMessages.count - maxHistory
+            let effectiveStart = systemIdx.map { min($0, startIdx) } ?? startIdx
+            finalMessages = Array(cleanedMessages[effectiveStart...])
+            AppLog.proxy.info("[stripThinkingBlocks] History truncated: \(cleanedMessages.count) -> \(finalMessages.count) msgs")
+        } else {
+            finalMessages = cleanedMessages
+        }
+
+        let hadTopLevelThinking = json["thinking"] != nil
+
+        AppLog.proxy.info("[stripThinkingBlocks] msgs=\(messages.count)->\(finalMessages.count) thinkingRemoved=\(totalThinkingRemoved) sigRemoved=\(totalSignatureRemoved) topLevelThinking=\(hadTopLevelThinking)")
+
+        json["messages"] = finalMessages
 
         return (try? TranscriptProjector.encodeJSONObject(json)) ?? data
+    }
+
+    /// Accurately check if body contains a thinking/redacted_thinking content block.
+    /// Unlike containsJSONStringField, this parses JSON to avoid false positives from
+    /// the word "thinking" appearing in regular text.
+    private static func bodyContainsThinkingBlock(_ data: Data) -> Bool {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messages = json["messages"] as? [[String: Any]] else {
+            return false
+        }
+        for message in messages {
+            guard let content = message["content"] as? [[String: Any]] else { continue }
+            for block in content {
+                if let type = block["type"] as? String {
+                    let lower = type.lowercased()
+                    if lower == "thinking" || lower == "redacted_thinking" || lower.contains("reasoning") {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
     }
 
     private static func containsJSONStringField(_ data: Data, field: String) -> Bool {

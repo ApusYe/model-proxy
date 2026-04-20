@@ -691,24 +691,11 @@ enum ProxyForwarder {
             return newMessage
         }
 
-        // Truncate history to cap context-window usage.
-        let maxHistory = 24
-        let finalMessages: [[String: Any]]
-        if cleanedMessages.count > maxHistory {
-            let systemIdx = cleanedMessages.firstIndex { ($0["role"] as? String) == "system" }
-            let startIdx = cleanedMessages.count - maxHistory
-            let effectiveStart = systemIdx.map { min($0, startIdx) } ?? startIdx
-            finalMessages = Array(cleanedMessages[effectiveStart...])
-            AppLog.proxy.info("[stripThinkingBlocks] History truncated: \(cleanedMessages.count) -> \(finalMessages.count) msgs")
-        } else {
-            finalMessages = cleanedMessages
-        }
-
         let hadTopLevelThinking = json["thinking"] != nil
 
-        AppLog.proxy.info("[stripThinkingBlocks] msgs=\(messages.count)->\(finalMessages.count) thinkingRemoved=\(totalThinkingRemoved) sigRemoved=\(totalSignatureRemoved) topLevelThinking=\(hadTopLevelThinking)")
+        AppLog.proxy.info("[stripThinkingBlocks] msgs=\(messages.count) thinkingRemoved=\(totalThinkingRemoved) sigRemoved=\(totalSignatureRemoved) topLevelThinking=\(hadTopLevelThinking)")
 
-        json["messages"] = finalMessages
+        json["messages"] = cleanedMessages
 
         return (try? TranscriptProjector.encodeJSONObject(json)) ?? data
     }
